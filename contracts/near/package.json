@@ -1,0 +1,31 @@
+{
+  "name": "near",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "node test-flow.js",
+    "test:testnet": "node testnet-integration.js",
+    "test:testnet:write": "RUN_WRITE_TESTS=true node testnet-integration.js",
+    "relayer:start": "ts-node --project relayer/tsconfig.json relayer/index.ts",
+    "migrate:v2": "node migrate-v2.js",
+    "deploy:v2": "node deploy-v2.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "near-api-js": "^7.1.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "jest": "^30.2.0",
+    "near-workspaces": "^5.0.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}

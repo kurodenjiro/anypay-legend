@@ -1,0 +1,125 @@
+#!/usr/bin/env node
+
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { connect, keyStores, KeyPair, providers, transactions } = require("near-api-js");
+
+const DEFAULT_WASM_PATH = path.join(
+  __dirname,
+  "target/wasm32-unknown-unknown/release/anypay_legend_near.wasm",
+);
+
+function requireEnv(name) {
+  const value = process.env[name]?.trim();
+  if (!value) throw new Error(`Missing required env: ${name}`);
+  return value;
+}
+
+function parseBool(value, fallback = false) {
+  if (value == null) return fallback;
+  const normalized = String(value).trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes";
+}
+
+async function viewCall(rpcUrl, contractId, methodName, args = {}) {
+  const provider = new providers.JsonRpcProvider({ url: rpcUrl });
+  const result = await provider.query({
+    request_type: "call_function",
+    account_id: contractId,
+    method_name: methodName,
+    args_base64: Buffer.from(JSON.stringify(args)).toString("base64"),
+    finality: "final",
+  });
+
+  return JSON.parse(Buffer.from(result.result).toString());
+}
+
+async function main() {
+  const networkId = process.env.NETWORK_ID?.trim() || "testnet";
+  const rpcUrl = process.env.RPC_URL?.trim() || "https://test.rpc.fastnear.com";
+  const contractId = requireEnv("CONTRACT_ID");
+  const ownerId = requireEnv("OWNER_ID");
+  const ownerPrivateKey = process.env.OWNER_PRIVATE_KEY?.trim();
+  const deployerId = process.env.DEPLOYER_ID?.trim() || ownerId;
+  const deployerPrivateKey = process.env.DEPLOYER_PRIVATE_KEY?.trim() || ownerPrivateKey;
+  const oracleAccountId = process.env.ORACLE_ACCOUNT_ID?.trim() || ownerId;
+  const storageFee = process.env.V2_STORAGE_FEE_YOCTO?.trim() || "50000000000000000000000";
+  const topupWindowMs = Number(process.env.TOPUP_WINDOW_MS || "3600000");
+  const runMigration = parseBool(process.env.RUN_MIGRATION, true);
+  const runDeploy = parseBool(process.env.RUN_DEPLOY, true);
+  const wasmPath = process.env.WASM_PATH?.trim() || DEFAULT_WASM_PATH;
+
+  if (!Number.isFinite(topupWindowMs) || topupWindowMs <= 0) {
+    throw new Error(`Invalid TOPUP_WINDOW_MS: ${process.env.TOPUP_WINDOW_MS}`);
+  }
+
+  if (!fs.existsSync(wasmPath)) {
+    throw new Error(`WASM file not found: ${wasmPath}`);
+  }
+
+  const keyStore =
+    ownerPrivateKey || deployerPrivateKey
+      ? new keyStores.InMemoryKeyStore()
+      : new keyStores.UnencryptedFileSystemKeyStore(path.join(os.homedir(), ".near-credentials"));
+
+  if (ownerPrivateKey) {
+    await keyStore.setKey(networkId, ownerId, KeyPair.fromString(ownerPrivateKey));
+  }
+
+  if (deployerPrivateKey && deployerId !== ownerId) {
+    await keyStore.setKey(networkId, deployerId, KeyPair.fromString(deployerPrivateKey));
+  }
+
+  const near = await connect({
+    networkId,
+    keyStore,
+    nodeUrl: rpcUrl,
+    walletUrl: `https://wallet.${networkId}.near.org`,
+    helperUrl: `https://helper.${networkId}.near.org`,
+  });
+
+  const owner = await near.account(ownerId);
+  await owner.state();
+  const deployer = await near.account(deployerId);
+  await deployer.state();
+
+  const wasm = fs.readFileSync(wasmPath);
+
+  if (runDeploy) {
+    console.log("Deploying upgraded wasm...");
+    await deployer.signAndSendTransaction({
+      receiverId: contractId,
+      actions: [transactions.deployContract(wasm)],
+    });
+    console.log("✓ wasm deployed", { contractId, wasmPath, deployerId });
+  } else {
+    console.log("Skipping deploy (RUN_DEPLOY=false)");
+  }
+
+  if (runMigration) {
+    console.log("Running migrate_v2...");
+    await owner.functionCall({
+      contractId,
+      methodName: "migrate_v2",
+      args: {
+        oracle_account_id: oracleAccountId,
+        storage_fee_yocto: storageFee,
+        topup_window_ms: topupWindowMs,
+      },
+      gas: "150000000000000",
+      attachedDeposit: "0",
+    });
+    console.log("✓ migrate_v2 completed");
+  } else {
+    console.log("Skipping migration (RUN_MIGRATION=false)");
+  }
+
+  const v2Config = await viewCall(rpcUrl, contractId, "get_v2_config", {});
+  console.log("✓ v2 config", v2Config);
+}
+
+main().catch((error) => {
+  console.error("deploy-v2 failed", error);
+  process.exit(1);
+});

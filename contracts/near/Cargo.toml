@@ -1,0 +1,38 @@
+[package]
+name = "anypay-legend-near"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+near-sdk = "=5.1.0"
+near-contract-standards = "=5.1.0"
+near-sys = "=0.2.6"
+borsh = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+hex = "0.4"
+schemars = "0.8"
+
+[features]
+abi = ["near-sdk/abi"]
+
+[dev-dependencies]
+near-workspaces = { version = "0.11.0", features = ["unstable"] }
+tokio = { version = "1.35", features = ["full"] }
+anyhow = "1.0"
+# serde_json duplicate? removed
+home = "=0.5.9"
+time = "=0.3.36"
+time-core = "=0.1.2"
+time-macros = "=0.2.18"
+
+[profile.release]
+codegen-units = 1
+opt-level = "s"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = false

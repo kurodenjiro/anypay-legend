@@ -1,0 +1,443 @@
+use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
+use near_sdk::{env, near_bindgen, PanicOnDefault, AccountId, Promise};
+use near_sdk::collections::{LookupMap, UnorderedSet};
+use near_sdk::serde::{Deserialize, Serialize};
+
+#[cfg(feature = "abi")]
+use near_sdk::schemars::JsonSchema;
+
+pub mod chains;
+
+// MPC Contract ID (on Testnet)
+const MPC_CONTRACT_ID: &str = "v1.signer-prod.testnet"; 
+
+#[near_bindgen]
+#[derive(BorshDeserialize, BorshSerialize, PanicOnDefault)]
+pub struct Contract {
+    // Owner of the contract
+    pub owner_id: AccountId,
+    
+    // === ESCROW STATE ===
+    // Deposit counter for unique IDs
+    pub deposit_counter: u64,
+    // Mapping: DepositId -> Deposit
+    pub deposits: LookupMap<u64, Deposit>,
+    // Mapping: AccountId -> Set<DepositId>
+    pub account_deposits: LookupMap<AccountId, UnorderedSet<u64>>,
+    // Mapping: DepositId -> Set<IntentHash>
+    pub deposit_intents: LookupMap<u64, UnorderedSet<String>>,
+    
+    // === ORCHESTRATOR STATE ===
+    // Intent counter for unique IDs
+    pub intent_counter: u64,
+    // Mapping: IntentHash -> Intent
+    pub intents: LookupMap<String, Intent>,
+    // Mapping: AccountId -> Set<IntentHash>
+    pub account_intents: LookupMap<AccountId, UnorderedSet<String>>,
+    
+    // === REGISTRY STATE ===
+    // Payment Method Registry: Name -> PaymentMethod
+    pub payment_methods: LookupMap<String, PaymentMethod>,
+    
+    // === CONFIG ===
+    pub protocol_fee: u128, // Fee in basis points (100 = 1%)
+    pub protocol_fee_recipient: AccountId,
+    pub max_intents_per_deposit: u8,
+    pub intent_expiration_period: u64, // Nanoseconds
+}
+
+// === STRUCTS ===
+
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, Debug)]
+#[cfg_attr(feature = "abi", derive(schemars::JsonSchema))]
+#[serde(crate = "near_sdk::serde")]
+pub struct Deposit {
+    pub deposit_id: u64,
+    pub depositor: AccountId,
+    pub delegate: Option<AccountId>, // Optional delegate to manage deposit
+    pub token: String, // For NEAR MVP, we track token type as string (e.g., "NEAR", "USDC")
+    pub total_deposit: u128,
+    pub remaining_deposits: u128,
+    pub outstanding_intents: u128, // Locked in intents
+    pub min_intent_amount: u128,
+    pub max_intent_amount: u128,
+    pub timestamp: u64,
+    // Multi-payment method support
+    pub payment_methods: Vec<String>, // List of payment method names
+    // Mapping: PaymentMethod -> PaymentMethodData (stored separately for efficiency)
+}
+
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, Debug)]
+#[serde(crate = "near_sdk::serde")]
+pub struct DepositPaymentMethodData {
+    pub payee_details_hash: String, // Hash of payee details (e.g., Venmo username)
+    pub verification_data: String, // Additional data for zkTLS verification
+    pub currencies: Vec<Currency>, // Supported currencies for this payment method
+}
+
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, Debug)]
+#[serde(crate = "near_sdk::serde")]
+pub struct Currency {
+    pub code: String, // e.g., "USD", "EUR"
+    pub min_conversion_rate: u128, // Minimum acceptable rate (in 1e18 precision)
+}
+
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, Debug)]
+#[cfg_attr(feature = "abi", derive(schemars::JsonSchema))]
+#[serde(crate = "near_sdk::serde")]
+pub struct PaymentMethod {
+    pub name: String,
+    pub verifier: String, // zkTLS verifier contract/pubkey
+    pub currencies: Vec<String>, // Supported currencies
+    pub initialized: bool,
+}
+
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, Debug)]
+#[cfg_attr(feature = "abi", derive(schemars::JsonSchema))]
+#[serde(crate = "near_sdk::serde")]
+pub struct Intent {
+    pub intent_hash: String,
+    pub buyer: AccountId, // Intent signaler
+    pub deposit_id: u64,
+    pub amount: u128,
+    pub timestamp: u64,
+    pub payment_method: String,
+    pub currency_code: String,
+    pub status: IntentStatus,
+    pub recipient: String, // Destination address on target chain
+    pub chain: String, // "ETH", "BTC", "ZEC"
+}
+
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[cfg_attr(feature = "abi", derive(schemars::JsonSchema))]
+#[serde(crate = "near_sdk::serde")]
+pub enum IntentStatus {
+    Signaled, // Intent created and funds locked
+    Fulfilled, // Payment verified and funds released
+    Cancelled, // Intent cancelled by buyer
+    Released, // Funds released by depositor
+}
+
+// === IMPLEMENTATION ===
+
+#[near_bindgen]
+impl Contract {
+    #[init]
+    pub fn new(owner_id: AccountId, protocol_fee_recipient: AccountId) -> Self {
+        Self {
+            owner_id,
+            deposit_counter: 0,
+            deposits: LookupMap::new(b"d"),
+            account_deposits: LookupMap::new(b"a"),
+            deposit_intents: LookupMap::new(b"e"),
+            intent_counter: 0,
+            intents: LookupMap::new(b"i"),
+            account_intents: LookupMap::new(b"b"),
+            payment_methods: LookupMap::new(b"p"),
+            protocol_fee: 100, // 1% default
+            protocol_fee_recipient,
+            max_intents_per_deposit: 100,
+            intent_expiration_period: 86400_000_000_000, // 1 day in nanoseconds
+        }
+    }
+
+    // === ESCROW FUNCTIONS ===
+
+    /// Create a new deposit
+    #[payable]
+    pub fn create_deposit(
+        &mut self,
+        token: String,
+        amount: u128,
+        min_intent_amount: u128,
+        max_intent_amount: u128,
+        payment_methods: Vec<String>,
+        delegate: Option<AccountId>,
+    ) -> u64 {
+        let depositor = env::predecessor_account_id();
+        
+        assert!(amount > 0, "Amount must be greater than 0");
+        assert!(min_intent_amount > 0, "Min intent amount must be greater than 0");
+        assert!(min_intent_amount <= max_intent_amount, "Min must be <= max");
+        assert!(payment_methods.len() > 0, "At least one payment method required");
+        
+        self.deposit_counter += 1;
+        let deposit_id = self.deposit_counter;
+        
+        let deposit = Deposit {
+            deposit_id,
+            depositor: depositor.clone(),
+            delegate,
+            token,
+            total_deposit: amount,
+            remaining_deposits: amount,
+            outstanding_intents: 0,
+            min_intent_amount,
+            max_intent_amount,
+            timestamp: env::block_timestamp(),
+            payment_methods,
+        };
+        
+        self.deposits.insert(&deposit_id, &deposit);
+        
+        // Track deposit for account
+        let mut user_deposits = self.account_deposits.get(&depositor).unwrap_or_else(|| {
+            UnorderedSet::new(format!("ud:{}", depositor).as_bytes())
+        });
+        user_deposits.insert(&deposit_id);
+        self.account_deposits.insert(&depositor, &user_deposits);
+        
+        // Initialize intent set for this deposit
+        self.deposit_intents.insert(&deposit_id, &UnorderedSet::new(format!("di:{}", deposit_id).as_bytes()));
+        
+        env::log_str(&format!("Deposit created: {}", deposit_id));
+        deposit_id
+    }
+
+    /// Withdraw deposit (only if no outstanding intents)
+    pub fn withdraw_deposit(&mut self, deposit_id: u64) {
+        let caller = env::predecessor_account_id();
+        let mut deposit = self.deposits.get(&deposit_id).expect("Deposit not found");
+        
+        assert!(deposit.depositor == caller || deposit.delegate == Some(caller.clone()), "Unauthorized");
+        assert!(deposit.outstanding_intents == 0, "Outstanding intents exist");
+        
+        let amount = deposit.remaining_deposits;
+        deposit.remaining_deposits = 0;
+        self.deposits.insert(&deposit_id, &deposit);
+        
+        env::log_str(&format!("Deposit withdrawn: {} amount: {}", deposit_id, amount));
+        // In production: transfer tokens back to depositor
+    }
+
+    /// Set delegate for deposit management
+    pub fn set_delegate(&mut self, deposit_id: u64, delegate: AccountId) {
+        let caller = env::predecessor_account_id();
+        let mut deposit = self.deposits.get(&deposit_id).expect("Deposit not found");
+        
+        assert!(deposit.depositor == caller, "Only depositor can set delegate");
+        deposit.delegate = Some(delegate.clone());
+        self.deposits.insert(&deposit_id, &deposit);
+        
+        env::log_str(&format!("Delegate set for deposit {}: {}", deposit_id, delegate));
+    }
+
+    // === ORCHESTRATOR FUNCTIONS ===
+
+    /// Signal intent to purchase liquidity
+    #[payable]
+    pub fn signal_intent(
+        &mut self,
+        deposit_id: u64,
+        amount: u128,
+        payment_method: String,
+        currency_code: String,
+        recipient: String,
+        chain: String,
+    ) -> String {
+        let buyer = env::predecessor_account_id();
+        let mut deposit = self.deposits.get(&deposit_id).expect("Deposit not found");
+        
+        // Validations
+        assert!(amount >= deposit.min_intent_amount, "Amount below minimum");
+        assert!(amount <= deposit.max_intent_amount, "Amount above maximum");
+        assert!(deposit.remaining_deposits >= amount, "Insufficient liquidity");
+        assert!(deposit.payment_methods.contains(&payment_method), "Payment method not supported");
+        
+        // Check max intents per deposit
+        let deposit_intent_vec = self.deposit_intents.get(&deposit_id).unwrap();
+        assert!(deposit_intent_vec.len() < self.max_intents_per_deposit as u64, "Max intents reached");
+        
+        // Lock funds
+        deposit.remaining_deposits -= amount;
+        deposit.outstanding_intents += amount;
+        self.deposits.insert(&deposit_id, &deposit);
+        
+        // Create intent
+        self.intent_counter += 1;
+        let intent_hash = format!("intent:{}", self.intent_counter);
+        
+        let intent = Intent {
+            intent_hash: intent_hash.clone(),
+            buyer: buyer.clone(),
+            deposit_id,
+            amount,
+            timestamp: env::block_timestamp(),
+            payment_method,
+            currency_code,
+            status: IntentStatus::Signaled,
+            recipient,
+            chain,
+        };
+        
+        self.intents.insert(&intent_hash, &intent);
+        
+        // Track intent for buyer
+        let mut buyer_intents = self.account_intents.get(&buyer).unwrap_or_else(|| {
+            UnorderedSet::new(format!("ui:{}", buyer).as_bytes())
+        });
+        buyer_intents.insert(&intent_hash);
+        self.account_intents.insert(&buyer, &buyer_intents);
+        
+        // Track intent for deposit
+        let mut deposit_intent_set = self.deposit_intents.get(&deposit_id).unwrap();
+        deposit_intent_set.insert(&intent_hash);
+        self.deposit_intents.insert(&deposit_id, &deposit_intent_set);
+        
+        env::log_str(&format!("Intent signaled: {}", intent_hash));
+        intent_hash
+    }
+
+    /// Cancel intent (buyer only)
+    pub fn cancel_intent(&mut self, intent_hash: String) {
+        let caller = env::predecessor_account_id();
+        let mut intent = self.intents.get(&intent_hash).expect("Intent not found");
+        
+        assert!(intent.buyer == caller, "Only buyer can cancel");
+        assert!(intent.status == IntentStatus::Signaled, "Intent not in signaled state");
+        
+        // Unlock funds
+        let mut deposit = self.deposits.get(&intent.deposit_id).unwrap();
+        deposit.remaining_deposits += intent.amount;
+        deposit.outstanding_intents -= intent.amount;
+        self.deposits.insert(&intent.deposit_id, &deposit);
+        
+        intent.status = IntentStatus::Cancelled;
+        self.intents.insert(&intent_hash, &intent);
+        
+        env::log_str(&format!("Intent cancelled: {}", intent_hash));
+    }
+
+    /// Fulfill intent (relayer with zkTLS proof)
+    /// For MVP: simplified without actual proof verification
+    pub fn fulfill_intent(&mut self, intent_hash: String) -> Promise {
+        let mut intent = self.intents.get(&intent_hash).expect("Intent not found");
+        assert!(intent.status == IntentStatus::Signaled, "Intent not in signaled state");
+        
+        // In production: verify zkTLS proof here
+        
+        // Update intent status
+        intent.status = IntentStatus::Fulfilled;
+        self.intents.insert(&intent_hash, &intent);
+        
+        // Update deposit
+        let mut deposit = self.deposits.get(&intent.deposit_id).unwrap();
+        deposit.outstanding_intents -= intent.amount;
+        self.deposits.insert(&intent.deposit_id, &deposit);
+        
+        env::log_str(&format!("Intent fulfilled: {}", intent_hash));
+        
+        // Request MPC signature to send funds to buyer
+        self.sign_transaction(intent)
+    }
+
+    /// Release intent (depositor manually releases funds)
+    pub fn release_intent(&mut self, intent_hash: String) -> Promise {
+        let caller = env::predecessor_account_id();
+        let mut intent = self.intents.get(&intent_hash).expect("Intent not found");
+        let deposit = self.deposits.get(&intent.deposit_id).unwrap();
+        
+        assert!(deposit.depositor == caller || deposit.delegate == Some(caller), "Unauthorized");
+        assert!(intent.status == IntentStatus::Signaled, "Intent not in signaled state");
+        
+        intent.status = IntentStatus::Released;
+        self.intents.insert(&intent_hash, &intent);
+        
+        // Update deposit
+        let mut deposit = self.deposits.get(&intent.deposit_id).unwrap();
+        deposit.outstanding_intents -= intent.amount;
+        self.deposits.insert(&intent.deposit_id, &deposit);
+        
+        env::log_str(&format!("Intent released: {}", intent_hash));
+        self.sign_transaction(intent)
+    }
+
+    // === PAYMENT METHOD REGISTRY ===
+
+    pub fn add_payment_method(&mut self, name: String, verifier: String, currencies: Vec<String>) {
+        self.assert_owner();
+        assert!(currencies.len() > 0, "At least one currency required");
+        
+        let pm = PaymentMethod {
+            name: name.clone(),
+            verifier,
+            currencies,
+            initialized: true,
+        };
+        
+        self.payment_methods.insert(&name, &pm);
+        env::log_str(&format!("Payment method added: {}", name));
+    }
+
+    pub fn remove_payment_method(&mut self, name: String) {
+        self.assert_owner();
+        self.payment_methods.remove(&name);
+        env::log_str(&format!("Payment method removed: {}", name));
+    }
+
+    // === VIEW FUNCTIONS ===
+
+    pub fn get_owner(&self) -> AccountId {
+        self.owner_id.clone()
+    }
+
+    pub fn get_payment_method(&self, name: String) -> Option<PaymentMethod> {
+        self.payment_methods.get(&name)
+    }
+
+    pub fn get_deposit(&self, deposit_id: u64) -> Option<Deposit> {
+        self.deposits.get(&deposit_id)
+    }
+
+    pub fn get_account_deposits(&self, account_id: AccountId) -> Vec<u64> {
+        self.account_deposits.get(&account_id)
+            .map(|set| set.to_vec())
+            .unwrap_or_else(|| vec![])
+    }
+
+    pub fn get_intent(&self, intent_hash: String) -> Option<Intent> {
+        self.intents.get(&intent_hash)
+    }
+
+    pub fn get_account_intents(&self, account_id: AccountId) -> Vec<String> {
+        self.account_intents.get(&account_id)
+            .map(|set| set.to_vec())
+            .unwrap_or_else(|| vec![])
+    }
+
+    pub fn get_deposit_intents(&self, deposit_id: u64) -> Vec<String> {
+        self.deposit_intents.get(&deposit_id)
+            .map(|set| set.to_vec())
+            .unwrap_or_else(|| vec![])
+    }
+
+    // === ADMIN FUNCTIONS ===
+
+    pub fn set_protocol_fee(&mut self, fee: u128) {
+        self.assert_owner();
+        assert!(fee <= 500, "Fee cannot exceed 5%"); // 500 basis points = 5%
+        self.protocol_fee = fee;
+    }
+
+    pub fn set_max_intents_per_deposit(&mut self, max: u8) {
+        self.assert_owner();
+        self.max_intents_per_deposit = max;
+    }
+
+    // === INTERNAL FUNCTIONS ===
+
+    fn sign_transaction(&self, intent: Intent) -> Promise {
+        env::log_str(&format!("Requesting MPC signature for {} on {}", intent.amount, intent.chain));
+        
+        // In production: construct transaction and call MPC contract
+        // if intent.chain == "ETH" { ... }
+        // else if intent.chain == "BTC" { ... }
+        
+        // Placeholder: return promise to current account
+        Promise::new(env::current_account_id())
+    }
+
+    fn assert_owner(&self) {
+        assert_eq!(env::predecessor_account_id(), self.owner_id, "Owner only");
+    }
+}
