@@ -1,5 +1,13 @@
 <script>
     import Vault from "$lib/components/Vault.svelte";
+    import MultiChainDeposit from "$lib/components/MultiChainDeposit.svelte";
+
+    let depositStatus = "";
+
+    function handleDeposit(data) {
+        console.log("Deposit initiated:", data);
+        depositStatus = `Deposit simulated! Mock TX: ${data.txHash}`;
+    }
 </script>
 
 <div class="container mx-auto px-6 py-24 min-h-screen">
@@ -12,9 +20,23 @@
             <p class="text-gray-400 mt-2">Manage your cross-chain assets.</p>
         </div>
 
-        <!-- Stakes -->
-        <section>
-            <Vault />
-        </section>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <!-- Stakes (Vault) -->
+            <section>
+                <Vault />
+            </section>
+
+            <!-- Deposit -->
+            <section>
+                <MultiChainDeposit onDeposit={handleDeposit} />
+                {#if depositStatus}
+                    <div
+                        class="mt-4 p-4 bg-green-900/50 border border-green-500/50 rounded-lg text-green-200"
+                    >
+                        {depositStatus}
+                    </div>
+                {/if}
+            </section>
+        </div>
     </div>
 </div>

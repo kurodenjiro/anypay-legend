@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { nearService } from "$lib/services/near";
+    import { nearService, nearStore } from "$lib/services/near";
     import { onMount } from "svelte";
     import { formatUnits } from "viem";
 
@@ -14,35 +14,51 @@
     let withdrawAmount = "";
     let recipientAddress = "";
 
-    onMount(async () => {
-        if (nearService.wallet?.isSignedIn()) {
-            accountId = nearService.wallet.getAccountId();
-            await loadStakes();
-        }
-    });
+    $: if ($nearStore.isConnected) {
+        accountId = $nearStore.accountId;
+        loadStakes();
+    } else {
+        accountId = null;
+        stakes = [];
+    }
 
     async function loadStakes() {
         if (!accountId) return;
         isLoading = true;
         try {
             // For MVP, if contract call fails (not deployed), show mock
-            try {
-                // @ts-ignore
-                const rawStakes =
-                    await nearService.getUserStakesReal(accountId);
-                // Parse raw stakes (Vec<(String, u128)>)
-                // Asset Key format "CHAIN:ASSET"
-                stakes = rawStakes.map(([key, amount]: [string, string]) => {
-                    const [chain, asset] = key.split(":");
-                    return { chain, asset, amount };
-                });
-            } catch (e) {
-                console.warn(
-                    "Failed to fetch real stakes (contract might not be deployed), showing empty state or mock for dev",
-                    e,
-                );
-                stakes = [];
-            }
+            // Fetch deposits from contract (or mock)
+            const deposits = await nearService.getAccountDeposits(accountId);
+
+            // Transform contract data to UI format
+            // Contract returns: { deposit_id, token, amount, available_amount, ... }
+            stakes = deposits.map((d: any) => {
+                // Heuristic mapping for demo purposes
+                // Real implementation would fetch token metadata
+                const isBtc = d.token.includes("btc");
+                const isUsdc = d.token.includes("usdc");
+                const isEth = d.token.includes("eth");
+
+                let chain = "NEAR";
+                let asset = "NEAR";
+
+                if (isBtc) {
+                    chain = "BTC";
+                    asset = "BTC";
+                } else if (isUsdc) {
+                    chain = "ETH";
+                    asset = "USDC";
+                } else if (isEth) {
+                    chain = "ETH";
+                    asset = "ETH";
+                }
+
+                return {
+                    chain,
+                    asset,
+                    amount: d.available_amount || d.amount, // Use available amount
+                };
+            });
         } catch (e) {
             console.error(e);
         } finally {

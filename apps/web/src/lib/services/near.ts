@@ -68,6 +68,28 @@ export class NearService {
             nearStore.set({ accountId: null, isConnected: false, isLoading: false });
         }
     }
+
+    // MOCK DATA TOGGLE
+    useMock = true; // Set to true to bypass RPC
+
+    private getMockDeposits() {
+        return [
+            {
+                deposit_id: 1,
+                token: 'usdc.testnet',
+                amount: '100000000', // 100 USDC (6 decimals)
+                available_amount: '100000000',
+                locked_amount: '0'
+            },
+            {
+                deposit_id: 2,
+                token: 'btc.testnet',
+                amount: '500000', // 0.005 BTC (8 decimals)
+                available_amount: '200000',
+                locked_amount: '300000'
+            }
+        ];
+    }
     // ... existing methods ...
 
     async login() {
@@ -108,7 +130,12 @@ export class NearService {
         paymentMethods: string[],
         delegate?: string
     ) {
+        if (this.useMock) {
+            console.log("Mock createDeposit:", { token, amount });
+            return { transaction_outcome: { id: "mock_tx_" + Date.now() } };
+        }
         if (!this.wallet || !this.accountId) throw new Error("Not signed in");
+
 
         return await this.wallet.signAndSendTransaction({
             signerId: this.accountId,
@@ -180,13 +207,17 @@ export class NearService {
      * Signal intent to purchase liquidity
      */
     async signalIntent(
-        depositId: number,
+        deposit_id: number,
         amount: string,
         paymentMethod: string,
         currencyCode: string,
         recipient: string,
         chain: string
     ) {
+        if (this.useMock) {
+            console.log("Mock signalIntent:", { deposit_id, amount, paymentMethod, currencyCode, recipient, chain });
+            return Promise.resolve({ transaction_outcome: { id: "mock_tx_" + Date.now() } });
+        }
         if (!this.wallet || !this.accountId) throw new Error("Not signed in");
 
         return await this.wallet.signAndSendTransaction({
@@ -197,7 +228,7 @@ export class NearService {
                 params: {
                     methodName: "signal_intent",
                     args: {
-                        deposit_id: depositId,
+                        deposit_id,
                         amount: parseUnits(amount, 24).toString(),
                         payment_method: paymentMethod,
                         currency_code: currencyCode,
@@ -277,6 +308,10 @@ export class NearService {
     // === PAYMENT METHOD REGISTRY ===
 
     async addPaymentMethod(name: string, verifier: string, currencies: string[]) {
+        if (this.useMock) {
+            console.log("Mock addPaymentMethod:", { name, verifier, currencies });
+            return { transaction_outcome: { id: "mock_tx_" + Date.now() } };
+        }
         if (!this.wallet || !this.accountId) throw new Error("Not signed in");
 
         return await this.wallet.signAndSendTransaction({
@@ -295,6 +330,10 @@ export class NearService {
     }
 
     async removePaymentMethod(name: string) {
+        if (this.useMock) {
+            console.log("Mock removePaymentMethod:", { name });
+            return { transaction_outcome: { id: "mock_tx_" + Date.now() } };
+        }
         if (!this.wallet || !this.accountId) throw new Error("Not signed in");
 
         return await this.wallet.signAndSendTransaction({
@@ -336,6 +375,10 @@ export class NearService {
     }
 
     async getAccountDeposits(accountId?: string) {
+        if (this.useMock) {
+            console.log("⚠️ Using MOCK data for getAccountDeposits");
+            return this.getMockDeposits();
+        }
         const account = accountId || this.accountId;
         if (!account) throw new Error("No account specified");
         return await this.view('get_account_deposits', { account_id: account });

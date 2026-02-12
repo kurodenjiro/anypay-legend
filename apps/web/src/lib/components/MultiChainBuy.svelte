@@ -64,13 +64,20 @@
                 recipientAddress,
             );
 
-            onSignal({
+            // Store the data to pass to parent
+            const signalData = {
                 chain: selectedChain,
                 asset: selectedChain,
                 amount: buyAmount,
                 recipient: recipientAddress,
                 intentId: "simulated_intent_" + Date.now(),
-            });
+            };
+
+            // Call onSignal AFTER this event handler completes
+            // This allows Svelte to safely unmount this component
+            setTimeout(() => {
+                onSignal(signalData);
+            }, 0);
         } catch (e: any) {
             console.error(e);
             error = "Signal failed: " + e.message;

@@ -26,21 +26,20 @@
     function handleConfirm() {
         isSubmitting = true;
 
-        // Dispatch signal intent
-        dispatch("signal", {
-            amount,
-            mode: "buy",
-            payingUsing: {
-                platform: selectedPlatform,
-                currency: selectedCurrency,
-            },
-            buyingAsset: { token: selectedToken },
-            recipient: "0xMyWallet...",
-        });
-
+        // CRITICAL FIX: Use setTimeout to dispatch event AFTER this handler completes
+        // This allows Svelte to safely unmount this component when parent changes state
         setTimeout(() => {
-            isSubmitting = false;
-        }, 500);
+            dispatch("signal", {
+                amount,
+                mode: "buy",
+                payingUsing: {
+                    platform: selectedPlatform,
+                    currency: selectedCurrency,
+                },
+                buyingAsset: { token: selectedToken },
+                recipient: "0xMyWallet...",
+            });
+        }, 0);
     }
 
     function handleCurrencySelect(e: any) {
@@ -84,7 +83,7 @@
                     >
                 </div>
 
-                {#each [{ sym: "USDC", name: "USD Coin", icon: "💲", network: "Base" }, { sym: "ETH", name: "Ethereum", icon: "Ξ", network: "Base" }] as asset}
+                {#each [{ sym: "BTC", name: "Bitcoin", icon: "₿", network: "Bitcoin" }, { sym: "ETH", name: "Ethereum", icon: "Ξ", network: "Ethereum" }, { sym: "ZEC", name: "Zcash", icon: "🛡️", network: "Zcash" }] as asset}
                     <button
                         on:click={() => handleAssetSelect(asset)}
                         class="w-full flex items-center justify-between bg-[#050505]/50 p-4 rounded-xl border border-white/5 hover:bg-white/5 transition-all group text-left"

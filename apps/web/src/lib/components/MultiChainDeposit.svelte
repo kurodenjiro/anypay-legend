@@ -77,10 +77,12 @@
         error = "";
 
         try {
-            await nearService.deposit(
-                selectedChain,
-                selectedChain,
+            await nearService.createDeposit(
+                selectedChain.toLowerCase() + ".testnet",
                 depositAmount,
+                "0",
+                "0",
+                [],
             );
             // Notify parent to move to next step
             onDeposit({
@@ -177,9 +179,12 @@
     <!-- Simulation Form -->
     <div class="space-y-4 pt-4 border-t border-white/10">
         <div class="space-y-2">
-            <label class="text-xs text-gray-400">Amount to Deposit</label>
+            <label for="deposit-amount" class="text-xs text-gray-400"
+                >Amount to Deposit</label
+            >
             <div class="relative">
                 <input
+                    id="deposit-amount"
                     type="number"
                     bind:value={depositAmount}
                     class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-blue-500/50 transition-colors"
