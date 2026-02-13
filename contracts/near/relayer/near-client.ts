@@ -1,4 +1,4 @@
-import { connect, keyStores, KeyPair, providers } from "near-api-js";
+import { Account, JsonRpcProvider, KeyPairSigner } from "near-api-js";
 
 export type FundingStatus =
   | "AwaitingFunding"
@@ -49,35 +49,31 @@ interface NearOracleClientConfig {
 const CHANGE_GAS = "120000000000000";
 
 export class NearOracleClient {
+  private readonly provider: JsonRpcProvider;
+  private readonly account: Account;
+  private readonly contractId: string;
+
   private constructor(
-    private readonly provider: providers.JsonRpcProvider,
-    private readonly account: any,
-    private readonly contractId: string,
-  ) {}
+    provider: JsonRpcProvider,
+    account: Account,
+    contractId: string,
+  ) {
+    this.provider = provider;
+    this.account = account;
+    this.contractId = contractId;
+  }
 
   static async init(config: NearOracleClientConfig): Promise<NearOracleClient> {
-    const keyStore = new keyStores.InMemoryKeyStore();
-    await keyStore.setKey(
-      config.networkId,
-      config.oracleAccountId,
-      KeyPair.fromString(config.oraclePrivateKey as `ed25519:${string}`),
+    const provider = new JsonRpcProvider({ url: config.rpcUrl });
+    const signer = KeyPairSigner.fromSecretKey(
+      config.oraclePrivateKey as `ed25519:${string}`,
     );
-
-    const near = await connect({
-      networkId: config.networkId,
-      nodeUrl: config.rpcUrl,
-      keyStore,
-      walletUrl: `https://wallet.${config.networkId}.near.org`,
-      helperUrl: `https://helper.${config.networkId}.near.org`,
-    });
-
-    const account = await near.account(config.oracleAccountId);
-    const provider = new providers.JsonRpcProvider({ url: config.rpcUrl });
+    const account = new Account(config.oracleAccountId, provider, signer);
     return new NearOracleClient(provider, account, config.contractId);
   }
 
   private async view<T>(methodName: string, args: unknown = {}): Promise<T> {
-    const result: any = await this.provider.query({
+    const result = await this.provider.query<{ result: Uint8Array }>({
       request_type: "call_function",
       account_id: this.contractId,
       method_name: methodName,
@@ -89,12 +85,12 @@ export class NearOracleClient {
   }
 
   private async call(methodName: string, args: unknown): Promise<void> {
-    await this.account.functionCall({
+    await this.account.callFunction({
       contractId: this.contractId,
       methodName,
-      args,
-      gas: CHANGE_GAS,
-      attachedDeposit: "0",
+      args: args as Record<string, unknown>,
+      gas: BigInt(CHANGE_GAS),
+      deposit: BigInt(0),
     });
   }
 

@@ -1,10 +1,9 @@
-import type { RelayerConfig } from "./config";
-import { IntentsClient } from "./intents-client";
+import type { RelayerConfig } from "./config.ts";
+import { IntentsClient } from "./intents-client.ts";
 import {
   type DepositFundingMetaView,
-  type DepositView,
   NearOracleClient,
-} from "./near-client";
+} from "./near-client.ts";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -73,6 +72,35 @@ function pickPositiveAmount(values: string[]): string {
   return "0";
 }
 
+function normalizeQuoteAmountForAsset(rawAmount: string, assetId: string): {
+  amount: string;
+  adjusted: boolean;
+} {
+  const normalizedAsset = assetId.toLowerCase();
+  let value: bigint;
+  try {
+    value = BigInt(rawAmount);
+  } catch {
+    return { amount: "0", adjusted: false };
+  }
+
+  if (value <= BigInt(0)) {
+    return { amount: "0", adjusted: false };
+  }
+
+  // Legacy compatibility:
+  // Early V2 UI sent BTC/ZEC using 24 decimals (NEAR yocto-style) instead of
+  // sat/zat 8 decimals. If detected, downscale by 10^(24-8)=10^16.
+  if (normalizedAsset.includes("btc") || normalizedAsset.includes("zec")) {
+    const legacyScale = BigInt(10) ** BigInt(16);
+    if (value >= legacyScale && value % legacyScale === BigInt(0)) {
+      return { amount: (value / legacyScale).toString(), adjusted: true };
+    }
+  }
+
+  return { amount: value.toString(), adjusted: false };
+}
+
 function deriveOriginTxHash(status: any): string {
   const fromSwap = status?.swapDetails?.originChainTxHashes?.[0]?.hash;
   if (typeof fromSwap === "string" && fromSwap.length > 0) return fromSwap;
@@ -104,15 +132,43 @@ function summarizeError(error: unknown, maxLen = 180): string {
   return message.length <= maxLen ? message : `${message.slice(0, maxLen - 3)}...`;
 }
 
+function isPositiveIntegerString(value: string): boolean {
+  try {
+    return BigInt(value) > BigInt(0);
+  } catch {
+    return false;
+  }
+}
+
+function isLargeAmountMismatch(expected: string, actual: string): boolean {
+  try {
+    const expectedValue = BigInt(expected);
+    const actualValue = BigInt(actual);
+    if (expectedValue <= BigInt(0) || actualValue <= BigInt(0)) return false;
+
+    // Consider as mismatch only for major scale drift to avoid noisy re-quotes.
+    return actualValue > expectedValue * BigInt(5) || actualValue * BigInt(5) < expectedValue;
+  } catch {
+    return false;
+  }
+}
+
 export class RelayerRunner {
   private running = false;
   private shutdownRequested = false;
+  private readonly config: RelayerConfig;
+  private readonly intentsClient: IntentsClient;
+  private readonly nearClient: NearOracleClient;
 
   private constructor(
-    private readonly config: RelayerConfig,
-    private readonly intentsClient: IntentsClient,
-    private readonly nearClient: NearOracleClient,
-  ) {}
+    config: RelayerConfig,
+    intentsClient: IntentsClient,
+    nearClient: NearOracleClient,
+  ) {
+    this.config = config;
+    this.intentsClient = intentsClient;
+    this.nearClient = nearClient;
+  }
 
   static async init(config: RelayerConfig): Promise<RelayerRunner> {
     const intentsClient = new IntentsClient(config.intentsBaseUrl, config.intentsApiKey);
@@ -190,22 +246,45 @@ export class RelayerRunner {
       return;
     }
 
-    if (
-      funding.quote_expires_at_ms > 0
-      && now + this.config.quoteRotationBufferMs >= funding.quote_expires_at_ms
-    ) {
-      await this.nearClient.oracleMarkQuoteExpired({
-        depositId,
-        quoteId: funding.quote_id,
-      });
-      await this.createOrRotateQuote(depositId, funding);
-      return;
-    }
-
     const status = await this.intentsClient.getStatus({
       depositAddress: funding.deposit_address,
       depositMemo: funding.deposit_memo || undefined,
     });
+
+    const quoteNearExpiry =
+      funding.quote_expires_at_ms > 0
+      && now + this.config.quoteRotationBufferMs >= funding.quote_expires_at_ms;
+
+    // If a pending quote exists with no detected deposit yet, ensure it still
+    // matches the expected amount scale for this asset. This self-heals legacy
+    // quotes created before amount-unit fixes.
+    if (status.status === "PENDING_DEPOSIT") {
+      const detectedDeposit = normalizeAmount(status.swapDetails?.depositedAmount);
+      const quoteAmount = pickPositiveAmount([
+        normalizeAmount(status.quoteResponse?.quote?.amountIn),
+        normalizeAmount(status.swapDetails?.amountIn),
+      ]);
+
+      if (!isPositiveIntegerString(detectedDeposit) && quoteAmount !== "0") {
+        const deposit = await this.nearClient.getDeposit(depositId);
+        const expectedRaw = normalizeAmount(deposit?.total_deposit);
+        const expectedNormalized = normalizeQuoteAmountForAsset(expectedRaw, funding.asset_id).amount;
+        if (
+          expectedNormalized !== "0"
+          && isLargeAmountMismatch(expectedNormalized, quoteAmount)
+        ) {
+          console.warn(
+            `[relayer] deposit ${depositId} quote amount mismatch (${quoteAmount} vs ${expectedNormalized}), rotating quote`,
+          );
+          await this.nearClient.oracleMarkQuoteExpired({
+            depositId,
+            quoteId: funding.quote_id,
+          });
+          await this.createOrRotateQuote(depositId, funding);
+          return;
+        }
+      }
+    }
 
     switch (status.status) {
       case "SUCCESS": {
@@ -254,20 +333,32 @@ export class RelayerRunner {
           return;
         }
 
-        if (
-          funding.quote_expires_at_ms > 0
-          && now + this.config.quoteRotationBufferMs >= funding.quote_expires_at_ms
-        ) {
+        if (quoteNearExpiry) {
           await this.nearClient.oracleMarkQuoteExpired({
             depositId,
             quoteId: funding.quote_id,
           });
+          await this.createOrRotateQuote(depositId, funding);
         }
         return;
       }
 
-      default:
+      case "PROCESSING":
+        // Deposit detected and being processed by Intents.
+        // Keep current quote and wait for terminal status so we don't lose tracking.
         return;
+
+      default: {
+        // Usually PENDING_DEPOSIT or provider-specific intermediate state.
+        if (quoteNearExpiry) {
+          await this.nearClient.oracleMarkQuoteExpired({
+            depositId,
+            quoteId: funding.quote_id,
+          });
+          await this.createOrRotateQuote(depositId, funding);
+        }
+        return;
+      }
     }
   }
 
@@ -278,10 +369,18 @@ export class RelayerRunner {
     const deposit = await this.nearClient.getDeposit(depositId);
     if (!deposit) return;
 
-    const amount = normalizeAmount(deposit.total_deposit);
+    const rawAmount = normalizeAmount(deposit.total_deposit);
+    const normalized = normalizeQuoteAmountForAsset(rawAmount, funding.asset_id);
+    const amount = normalized.amount;
     if (amount === "0") {
       console.warn(`[relayer] deposit ${depositId} has zero expected amount`);
       return;
+    }
+    if (normalized.adjusted) {
+      console.warn(
+        `[relayer] deposit ${depositId} amount adjusted for ${funding.asset_id}: `
+        + `${rawAmount} -> ${amount}`,
+      );
     }
 
     try {

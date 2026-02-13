@@ -1,12 +1,31 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { formatUnits } from "viem";
 import SellWidget from "./SellWidget";
-import { nearService, type DepositFundingMetaV2 } from "@/lib/services/near";
+import { nearService, type DepositFundingMetaV2, type FundingStatusV2 } from "@/lib/services/near";
+import { getIntentsStatusByDeposit, type OneClickStatusResponse } from "@/lib/services/intents-pricing";
+import { encodePaymentMethodWithTag, parsePaymentMethod } from "@/lib/services/payment-method";
 import { useNear } from "@/hooks/useNear";
 
 type TradeState = "DEPOSIT" | "FUNDING" | "SUCCESS";
+const STATUS_REFRESH_INTERVAL_MS = 5_000;
+
+type ResumeFundingItem = {
+    depositId: number;
+    assetId: string;
+    asset: string;
+    status: FundingStatusV2;
+    topupDeadlineAtMs: number;
+};
+
+type LiquidityItem = {
+    depositId: number;
+    assetId: string;
+    asset: string;
+    remainingRaw: string;
+};
 
 function trimTrailingZeros(value: string): string {
     return value.replace(/\.?(0+)$/, "");
@@ -50,15 +69,75 @@ function getTxHash(result: any): string {
     );
 }
 
-function formatAmount(amount: string | number | bigint | undefined): string {
+function formatAmount(
+    amount: string | number | bigint | undefined,
+    symbolOrAsset?: string | null,
+): string {
     if (amount === undefined || amount === null) return "0";
 
     try {
         const value = typeof amount === "string" ? BigInt(amount) : BigInt(amount);
-        return trimTrailingZeros(formatUnits(value, 24));
+        const decimals = getAssetDecimals(symbolOrAsset);
+        return trimTrailingZeros(formatUnits(value, decimals));
     } catch {
         return String(amount);
     }
+}
+
+function inferAssetSymbol(value: string | null | undefined): string {
+    const normalized = String(value || "").toUpperCase();
+    if (normalized.includes("BTC")) return "BTC";
+    if (normalized.includes("ETH")) return "ETH";
+    if (normalized.includes("ZEC")) return "ZEC";
+    return normalized || "ASSET";
+}
+
+function formatDeadlineLabel(deadlineMs?: number): string {
+    if (!deadlineMs || deadlineMs <= 0) return "Awaiting quote";
+    const remaining = deadlineMs - Date.now();
+    if (remaining <= 0) return "Expired";
+    const totalSeconds = Math.floor(remaining / 1000);
+    const mins = Math.floor(totalSeconds / 60);
+    const secs = totalSeconds % 60;
+    return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+}
+
+function formatStatusTimestamp(value?: string): string {
+    if (!value) return "N/A";
+    const parsed = Date.parse(value);
+    if (!Number.isFinite(parsed)) return value;
+    return new Date(parsed).toLocaleString();
+}
+
+function normalizeDisplayAmount(value?: string | null): string | null {
+    const normalized = String(value ?? "").trim();
+    if (!/^\d+(\.\d+)?$/.test(normalized)) return null;
+    const trimmed = trimTrailingZeros(normalized);
+    return trimmed.length > 0 ? trimmed : "0";
+}
+
+function getAssetDecimals(symbolOrAsset: string | null | undefined): number {
+    const normalized = String(symbolOrAsset || "").toUpperCase();
+    if (normalized.includes("BTC")) return 8;
+    if (normalized.includes("ZEC")) return 8;
+    if (normalized.includes("ETH")) return 18;
+    return 24;
+}
+
+function parseRawAmount(value?: string | null): bigint | null {
+    const normalized = String(value || "").trim();
+    if (!/^\d+$/.test(normalized)) return null;
+    try {
+        const parsed = BigInt(normalized);
+        return parsed >= BigInt(0) ? parsed : null;
+    } catch {
+        return null;
+    }
+}
+
+function hasPositiveRawAmount(value?: string | null): boolean {
+    const parsed = parseRawAmount(value);
+    return parsed !== null && parsed > BigInt(0);
 }
 
 function resolveTerminalMessage(fundingMeta: DepositFundingMetaV2 | null): string {
@@ -80,6 +159,8 @@ function resolveTerminalMessage(fundingMeta: DepositFundingMetaV2 | null): strin
 }
 
 export default function SellFlow() {
+    const router = useRouter();
+    const searchParams = useSearchParams();
     const [currentState, setCurrentState] = useState<TradeState>("DEPOSIT");
     const [tradeData, setTradeData] = useState<any>(null);
     const [walletBalanceNear, setWalletBalanceNear] = useState<string | null>(null);
@@ -88,10 +169,38 @@ export default function SellFlow() {
     const [fundingError, setFundingError] = useState<string>("");
     const [isQrUnavailable, setIsQrUnavailable] = useState(false);
     const [clockMs, setClockMs] = useState(() => Date.now());
+    const [resumeItems, setResumeItems] = useState<ResumeFundingItem[]>([]);
+    const [liquidityItems, setLiquidityItems] = useState<LiquidityItem[]>([]);
+    const [isResumeItemsLoading, setIsResumeItemsLoading] = useState(false);
+    const [withdrawingDepositId, setWithdrawingDepositId] = useState<number | null>(null);
+    const [oneClickStatus, setOneClickStatus] = useState<OneClickStatusResponse | null>(null);
+    const [oneClickStatusError, setOneClickStatusError] = useState("");
+    const [isOneClickStatusLoading, setIsOneClickStatusLoading] = useState(false);
+    const [ignoredResumeDepositId, setIgnoredResumeDepositId] = useState<number | null>(null);
 
     const { isConnected, connect, accountId, isLoading } = useNear();
 
     const isV2FlowEnabled = nearService.isV2FlowEnabled();
+    const resumeDepositIdFromQuery = useMemo(() => {
+        const value = searchParams.get("depositId");
+        if (!value) return null;
+        const parsed = Number(value);
+        return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+    }, [searchParams]);
+
+    const setResumeDepositIdInUrl = useCallback((depositId: number) => {
+        const next = new URLSearchParams(searchParams.toString());
+        next.set("depositId", String(depositId));
+        router.replace(`/sell?${next.toString()}`);
+    }, [router, searchParams]);
+
+    const clearResumeDepositIdFromUrl = useCallback(() => {
+        if (!searchParams.has("depositId")) return;
+        const next = new URLSearchParams(searchParams.toString());
+        next.delete("depositId");
+        const query = next.toString();
+        router.replace(query ? `/sell?${query}` : "/sell");
+    }, [router, searchParams]);
 
     const loadWalletBalance = useCallback(async () => {
         if (!isConnected || !accountId) {
@@ -131,6 +240,146 @@ export default function SellFlow() {
         return depositId;
     }, []);
 
+    const resumeDepositIntent = useCallback(async (depositId: number) => {
+        if (!accountId) {
+            throw new Error("Wallet not connected");
+        }
+
+        const [deposit, meta] = await Promise.all([
+            nearService.getDeposit(depositId),
+            nearService.getDepositFundingV2(depositId),
+        ]);
+
+        if (!deposit) {
+            throw new Error(`Deposit #${depositId} not found`);
+        }
+
+        if (deposit.depositor !== accountId && deposit.delegate !== accountId) {
+            throw new Error(`Deposit #${depositId} is not managed by this wallet`);
+        }
+
+        if (!meta) {
+            throw new Error(`Deposit #${depositId} is a legacy deposit and cannot be resumed here`);
+        }
+
+        const assetId = meta.asset_id || deposit.token;
+        const asset = inferAssetSymbol(assetId);
+        const amount = formatAmount(deposit.total_deposit, assetId);
+        const resumePaymentInfo = parsePaymentMethod(deposit.payment_methods?.[0]);
+        const baseTradeData = {
+            depositId,
+            assetId,
+            asset,
+            amount,
+            paymentMethod: resumePaymentInfo.method || "wise",
+            sellerAccountTag: resumePaymentInfo.accountTag || "",
+            timestamp: Date.now(),
+        };
+
+        setFundingMeta(meta);
+        setFundingError("");
+        if (meta.status === "Funded") {
+            setTradeData({ ...baseTradeData, fundingMeta: meta });
+            setCurrentState("SUCCESS");
+        } else {
+            setTradeData(baseTradeData);
+            setCurrentState("FUNDING");
+        }
+        setResumeDepositIdInUrl(depositId);
+        await loadWalletBalance();
+    }, [accountId, loadWalletBalance, setResumeDepositIdInUrl]);
+
+    const loadResumeItems = useCallback(async () => {
+        if (!isV2FlowEnabled || !accountId || !isConnected) {
+            setResumeItems([]);
+            setLiquidityItems([]);
+            return;
+        }
+
+        setIsResumeItemsLoading(true);
+        try {
+            const deposits = await nearService.getAccountDeposits(accountId);
+            const recent = [...deposits]
+                .sort((a, b) => b.deposit_id - a.deposit_id)
+                .slice(0, 25);
+
+            const rows = await Promise.all(
+                recent.map(async (deposit) => {
+                    const meta = await nearService.getDepositFundingV2(deposit.deposit_id);
+                    if (!meta) return null;
+                    return {
+                        deposit,
+                        meta,
+                    };
+                }),
+            );
+            const resumableRows: ResumeFundingItem[] = [];
+            const activeLiquidityRows: LiquidityItem[] = [];
+            for (const row of rows) {
+                if (!row) continue;
+
+                const assetId = row.meta.asset_id || row.deposit.token;
+                const asset = inferAssetSymbol(assetId);
+
+                if (row.meta.status === "AwaitingFunding") {
+                    resumableRows.push({
+                        depositId: row.deposit.deposit_id,
+                        assetId,
+                        asset,
+                        status: row.meta.status,
+                        topupDeadlineAtMs: Number(row.meta.topup_deadline_at_ms || 0),
+                    });
+                }
+
+                if (row.meta.status === "Funded" && hasPositiveRawAmount(row.deposit.remaining_deposits)) {
+                    activeLiquidityRows.push({
+                        depositId: row.deposit.deposit_id,
+                        assetId,
+                        asset,
+                        remainingRaw: String(row.deposit.remaining_deposits || "0"),
+                    });
+                }
+            }
+            setResumeItems(resumableRows);
+            setLiquidityItems(activeLiquidityRows);
+        } catch (error) {
+            console.error("SellFlow: failed to load resumable deposit intents", error);
+            setResumeItems([]);
+            setLiquidityItems([]);
+        } finally {
+            setIsResumeItemsLoading(false);
+        }
+    }, [accountId, isConnected, isV2FlowEnabled]);
+
+    const refreshOneClickStatus = useCallback(async (
+        metaOverride?: DepositFundingMetaV2 | null,
+    ) => {
+        const activeMeta = metaOverride ?? fundingMeta;
+        const depositAddress = String(activeMeta?.deposit_address || "").trim();
+        if (!depositAddress) {
+            setOneClickStatus(null);
+            setOneClickStatusError("");
+            return;
+        }
+
+        try {
+            setIsOneClickStatusLoading(true);
+            const status = await getIntentsStatusByDeposit(
+                depositAddress,
+                activeMeta?.deposit_memo || undefined,
+            );
+            setOneClickStatus(status);
+            setOneClickStatusError("");
+        } catch (error: unknown) {
+            console.error("SellFlow: failed to fetch 1Click status", error);
+            setOneClickStatusError(
+                error instanceof Error ? error.message : "Failed to fetch 1Click status",
+            );
+        } finally {
+            setIsOneClickStatusLoading(false);
+        }
+    }, [fundingMeta]);
+
     const refreshFundingMeta = useCallback(async () => {
         const depositId = Number(tradeData?.depositId);
         if (!Number.isInteger(depositId) || depositId <= 0) return;
@@ -141,6 +390,7 @@ export default function SellFlow() {
 
             setFundingMeta(meta);
             setFundingError("");
+            await refreshOneClickStatus(meta);
 
             if (meta.status === "Funded") {
                 setTradeData((prev: any) => ({ ...prev, fundingMeta: meta }));
@@ -151,7 +401,7 @@ export default function SellFlow() {
             console.error("SellFlow: failed to refresh funding metadata", error);
             setFundingError(error?.message || "Failed to load funding status");
         }
-    }, [tradeData?.depositId, loadWalletBalance]);
+    }, [tradeData?.depositId, loadWalletBalance, refreshOneClickStatus]);
 
     useEffect(() => {
         void loadWalletBalance();
@@ -167,26 +417,77 @@ export default function SellFlow() {
         if (currentState !== "FUNDING") return;
         if (!tradeData?.depositId) return;
 
-        void refreshFundingMeta();
         const interval = setInterval(() => {
             void refreshFundingMeta();
-        }, 5_000);
+        }, STATUS_REFRESH_INTERVAL_MS);
 
         return () => clearInterval(interval);
     }, [currentState, tradeData?.depositId, refreshFundingMeta, isV2FlowEnabled]);
 
     useEffect(() => {
+        if (currentState === "FUNDING") return;
+        setOneClickStatus(null);
+        setOneClickStatusError("");
+        setIsOneClickStatusLoading(false);
+    }, [currentState]);
+
+    useEffect(() => {
         setIsQrUnavailable(false);
     }, [fundingMeta?.deposit_address, fundingMeta?.deposit_memo]);
 
+    useEffect(() => {
+        if (currentState !== "DEPOSIT") return;
+        void loadResumeItems();
+    }, [currentState, loadResumeItems]);
+
+    useEffect(() => {
+        if (resumeDepositIdFromQuery === null) {
+            if (ignoredResumeDepositId !== null) {
+                setIgnoredResumeDepositId(null);
+            }
+            return;
+        }
+
+        if (
+            ignoredResumeDepositId !== null
+            && resumeDepositIdFromQuery !== ignoredResumeDepositId
+        ) {
+            setIgnoredResumeDepositId(null);
+        }
+    }, [resumeDepositIdFromQuery, ignoredResumeDepositId]);
+
+    useEffect(() => {
+        if (!isV2FlowEnabled) return;
+        if (!resumeDepositIdFromQuery) return;
+        if (!accountId || !isConnected) return;
+        if (currentState !== "DEPOSIT") return;
+        if (ignoredResumeDepositId === resumeDepositIdFromQuery) return;
+
+        void resumeDepositIntent(resumeDepositIdFromQuery).catch((error: unknown) => {
+            const message = error instanceof Error ? error.message : "Failed to resume deposit intent";
+            setFundingError(message);
+        });
+    }, [
+        accountId,
+        currentState,
+        isConnected,
+        ignoredResumeDepositId,
+        isV2FlowEnabled,
+        resumeDepositIdFromQuery,
+        resumeDepositIntent,
+    ]);
+
     const handleDeposit = async (data: any) => {
         try {
+            setFundingError("");
             if (!accountId) {
                 throw new Error("Wallet not connected");
             }
 
             const minIntentAmount = toMinIntentAmount(data.amount);
             const paymentMethod = String(data.acceptingPayment.platform.name).trim().toLowerCase();
+            const sellerAccountTag = String(data.acceptingPayment?.accountTag || "").trim();
+            const paymentMethodRaw = encodePaymentMethodWithTag(paymentMethod, sellerAccountTag) || paymentMethod;
 
             if (isV2FlowEnabled) {
                 if (!data.assetId) throw new Error("Missing canonical assetId");
@@ -197,7 +498,7 @@ export default function SellFlow() {
                     data.amount,
                     minIntentAmount,
                     data.amount,
-                    [paymentMethod],
+                    [paymentMethodRaw],
                     data.refundTo,
                 );
 
@@ -207,10 +508,13 @@ export default function SellFlow() {
                     ...data,
                     timestamp: Date.now(),
                     paymentMethod,
+                    paymentMethodRaw,
+                    sellerAccountTag,
                     depositId,
                     txHash: getTxHash(result),
                 });
                 setCurrentState("FUNDING");
+                setResumeDepositIdInUrl(depositId);
                 await loadWalletBalance();
                 return;
             }
@@ -220,7 +524,7 @@ export default function SellFlow() {
                 data.amount,
                 minIntentAmount,
                 data.amount,
-                [paymentMethod],
+                [paymentMethodRaw],
             );
 
             const depositId = await resolveDepositId(result, accountId);
@@ -228,6 +532,8 @@ export default function SellFlow() {
                 ...data,
                 timestamp: Date.now(),
                 paymentMethod,
+                paymentMethodRaw,
+                sellerAccountTag,
                 depositId,
                 txHash: getTxHash(result),
             });
@@ -259,6 +565,44 @@ export default function SellFlow() {
     }, [hasFundingDeadline, fundingCountdownMs]);
 
     const terminalFundingMessage = resolveTerminalMessage(fundingMeta);
+    const depositedAmountRaw = useMemo(
+        () => oneClickStatus?.swapDetails?.depositedAmount
+            || oneClickStatus?.swapDetails?.amountIn
+            || "",
+        [oneClickStatus],
+    );
+    const fundingAssetSymbol = useMemo(
+        () => String(tradeData?.asset || inferAssetSymbol(tradeData?.assetId)),
+        [tradeData?.asset, tradeData?.assetId],
+    );
+    const fundingAssetDecimals = useMemo(
+        () => getAssetDecimals(fundingAssetSymbol),
+        [fundingAssetSymbol],
+    );
+    const depositedFromRawFormatted = useMemo(() => {
+        const parsed = parseRawAmount(depositedAmountRaw);
+        if (parsed === null) return null;
+        return trimTrailingZeros(formatUnits(parsed, fundingAssetDecimals));
+    }, [depositedAmountRaw, fundingAssetDecimals]);
+    const depositedAmountFormatted = useMemo(
+        () => (
+            depositedFromRawFormatted
+            || normalizeDisplayAmount(oneClickStatus?.swapDetails?.depositedAmountFormatted)
+            || normalizeDisplayAmount(oneClickStatus?.swapDetails?.amountInFormatted)
+            || "0"
+        ),
+        [depositedFromRawFormatted, oneClickStatus],
+    );
+    const oneClickAmountDisplay = useMemo(
+        () => normalizeDisplayAmount(depositedAmountFormatted) || "N/A",
+        [depositedAmountFormatted],
+    );
+    const hasDepositedAmount = useMemo(() => {
+        const parsedRaw = parseRawAmount(depositedAmountRaw);
+        if (parsedRaw !== null) return parsedRaw > BigInt(0);
+        const normalized = normalizeDisplayAmount(depositedAmountFormatted);
+        return Boolean(normalized && normalized !== "0");
+    }, [depositedAmountRaw, depositedAmountFormatted]);
     const qrPayload = useMemo(() => {
         if (!fundingMeta?.deposit_address) return "";
         return `${fundingMeta.deposit_address}${fundingMeta.deposit_memo ? `|memo:${fundingMeta.deposit_memo}` : ""}`;
@@ -272,29 +616,179 @@ export default function SellFlow() {
         }
     };
 
+    const handleWithdrawLiquidity = useCallback(async (depositId: number) => {
+        if (!Number.isInteger(depositId) || depositId <= 0) return;
+        if (withdrawingDepositId !== null) return;
+
+        setWithdrawingDepositId(depositId);
+        setFundingError("");
+
+        try {
+            await nearService.withdrawDeposit(depositId);
+            await loadWalletBalance();
+            await loadResumeItems();
+
+            if (Number(tradeData?.depositId) === depositId) {
+                setFundingMeta(null);
+                setTradeData(null);
+                setCurrentState("DEPOSIT");
+                setIsQrUnavailable(false);
+                clearResumeDepositIdFromUrl();
+            }
+        } catch (error: unknown) {
+            const message = error instanceof Error
+                ? error.message
+                : "Failed to withdraw liquidity";
+            setFundingError(message);
+        } finally {
+            setWithdrawingDepositId(null);
+        }
+    }, [
+        withdrawingDepositId,
+        loadWalletBalance,
+        loadResumeItems,
+        tradeData?.depositId,
+        clearResumeDepositIdFromUrl,
+    ]);
+
     const resetToDeposit = () => {
+        const activeDepositId = Number(tradeData?.depositId || resumeDepositIdFromQuery || 0);
+        if (Number.isInteger(activeDepositId) && activeDepositId > 0) {
+            setIgnoredResumeDepositId(activeDepositId);
+        }
         setFundingMeta(null);
         setFundingError("");
         setTradeData(null);
         setCurrentState("DEPOSIT");
         setIsQrUnavailable(false);
+        clearResumeDepositIdFromUrl();
     };
 
     return (
         <div className="w-full max-w-3xl mx-auto space-y-8 relative">
             <div className="min-h-[500px] relative">
                 {currentState === "DEPOSIT" && (
-                    <SellWidget
-                        onDeposit={handleDeposit}
-                        isConnected={isConnected}
-                        onConnect={connect}
-                        isConnecting={isLoading}
-                        isV2FlowEnabled={isV2FlowEnabled}
-                        accountId={accountId}
-                        walletBalanceNear={walletBalanceNear}
-                        isBalanceLoading={isBalanceLoading}
-                        onRefreshBalance={loadWalletBalance}
-                    />
+                    <div className="space-y-4">
+                        {isV2FlowEnabled && isConnected && (
+                            <div className="glass-panel p-4 space-y-3">
+                                <div className="flex items-center justify-between">
+                                    <p className="text-sm font-semibold text-white">Pending Deposit Intents</p>
+                                    <button
+                                        type="button"
+                                        onClick={() => void loadResumeItems()}
+                                        className="text-xs px-2.5 py-1 rounded-md border border-white/15 bg-white/5 hover:bg-white/10 text-gray-200"
+                                    >
+                                        {isResumeItemsLoading ? "Loading..." : "Refresh"}
+                                    </button>
+                                </div>
+
+                                {resumeItems.length === 0 ? (
+                                    <p className="text-xs text-gray-400">
+                                        No pending funding intents found.
+                                    </p>
+                                ) : (
+                                    <div className="space-y-2">
+                                        {resumeItems.map((item) => (
+                                            <div
+                                                key={item.depositId}
+                                                className="bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 flex items-center justify-between gap-3"
+                                            >
+                                                <div className="min-w-0">
+                                                    <p className="text-sm text-white font-medium">
+                                                        Deposit #{item.depositId} · {item.asset}
+                                                    </p>
+                                                    <p className="text-xs text-gray-400 truncate">
+                                                        {item.assetId} · Timer: {formatDeadlineLabel(item.topupDeadlineAtMs)}
+                                                    </p>
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        void resumeDepositIntent(item.depositId).catch((error: unknown) => {
+                                                            const message = error instanceof Error
+                                                                ? error.message
+                                                                : "Failed to resume deposit intent";
+                                                            setFundingError(message);
+                                                        });
+                                                    }}
+                                                    className="px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-xs whitespace-nowrap"
+                                                >
+                                                    Continue Deposit
+                                                </button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {isV2FlowEnabled && isConnected && (
+                            <div className="glass-panel p-4 space-y-3">
+                                <div className="flex items-center justify-between">
+                                    <p className="text-sm font-semibold text-white">Active Liquidity</p>
+                                    <button
+                                        type="button"
+                                        onClick={() => void loadResumeItems()}
+                                        className="text-xs px-2.5 py-1 rounded-md border border-white/15 bg-white/5 hover:bg-white/10 text-gray-200"
+                                    >
+                                        {isResumeItemsLoading ? "Loading..." : "Refresh"}
+                                    </button>
+                                </div>
+
+                                {liquidityItems.length === 0 ? (
+                                    <p className="text-xs text-gray-400">
+                                        No funded liquidity available to withdraw.
+                                    </p>
+                                ) : (
+                                    <div className="space-y-2">
+                                        {liquidityItems.map((item) => (
+                                            <div
+                                                key={`liq:${item.depositId}`}
+                                                className="bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 flex items-center justify-between gap-3"
+                                            >
+                                                <div className="min-w-0">
+                                                    <p className="text-sm text-white font-medium">
+                                                        Deposit #{item.depositId} · {item.asset}
+                                                    </p>
+                                                    <p className="text-xs text-gray-400 truncate">
+                                                        Remaining: {formatAmount(item.remainingRaw, item.assetId)} {item.asset}
+                                                    </p>
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        void handleWithdrawLiquidity(item.depositId);
+                                                    }}
+                                                    disabled={withdrawingDepositId !== null}
+                                                    className="px-3 py-1.5 rounded-md bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white text-xs whitespace-nowrap"
+                                                >
+                                                    {withdrawingDepositId === item.depositId ? "Withdrawing..." : "Withdraw"}
+                                                </button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {fundingError && (
+                            <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3 text-sm text-red-100">
+                                {fundingError}
+                            </div>
+                        )}
+
+                        <SellWidget
+                            onDeposit={handleDeposit}
+                            isConnected={isConnected}
+                            onConnect={connect}
+                            isConnecting={isLoading}
+                            isV2FlowEnabled={isV2FlowEnabled}
+                            accountId={accountId}
+                            walletBalanceNear={walletBalanceNear}
+                            isBalanceLoading={isBalanceLoading}
+                            onRefreshBalance={loadWalletBalance}
+                        />
+                    </div>
                 )}
 
                 {currentState === "FUNDING" && (
@@ -332,9 +826,28 @@ export default function SellFlow() {
                                 <span className="text-blue-300 font-mono">{fundingMeta?.status || "AwaitingFunding"}</span>
                             </div>
                             <div className="flex justify-between text-sm">
-                                <span className="text-gray-400">Quote Generation</span>
-                                <span className="text-white font-mono">{fundingMeta?.quote_generation || 0}</span>
+                                <span className="text-gray-400">1Click Status</span>
+                                <span className="text-purple-300 font-mono">
+                                    {oneClickStatus?.status
+                                        || (fundingMeta?.deposit_address
+                                            ? (isOneClickStatusLoading ? "Checking..." : "Unknown")
+                                            : "Awaiting quote")}
+                                </span>
                             </div>
+                            <div className="flex justify-between text-xs">
+                                <span className="text-gray-500">1Click Updated</span>
+                                <span className="text-gray-300 font-mono">
+                                    {formatStatusTimestamp(oneClickStatus?.updatedAt)}
+                                </span>
+                            </div>
+                            {hasDepositedAmount && (
+                                <div className="flex justify-between text-xs">
+                                    <span className="text-gray-500">Deposited Amount</span>
+                                    <span className="text-gray-300 font-mono break-all text-right max-w-[70%]">
+                                        {oneClickAmountDisplay} {fundingAssetSymbol}
+                                    </span>
+                                </div>
+                            )}
                         </div>
 
                         {!!fundingMeta?.deposit_address && (
@@ -404,6 +917,11 @@ export default function SellFlow() {
                                 {terminalFundingMessage || fundingError}
                             </div>
                         )}
+                        {oneClickStatusError && (
+                            <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 text-sm text-amber-100">
+                                1Click check failed: {oneClickStatusError}
+                            </div>
+                        )}
 
                         <div className="flex flex-wrap gap-2">
                             <button
@@ -411,17 +929,11 @@ export default function SellFlow() {
                                 onClick={() => void refreshFundingMeta()}
                                 className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl transition-all"
                             >
-                                Refresh Status
+                                {isOneClickStatusLoading ? "Refreshing..." : "Refresh Status"}
                             </button>
-                            {(fundingMeta?.status === "TopUpExpired" || fundingMeta?.status === "Failed" || fundingMeta?.status === "Cancelled") && (
-                                <button
-                                    type="button"
-                                    onClick={resetToDeposit}
-                                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl transition-all"
-                                >
-                                    Create New Deposit Intent
-                                </button>
-                            )}
+                            <span className="self-center text-xs text-gray-400">
+                                Auto-refresh every 5s
+                            </span>
                         </div>
                     </div>
                 )}
@@ -459,7 +971,10 @@ export default function SellFlow() {
                             <div className="flex justify-between">
                                 <span className="text-gray-400">Funded Amount</span>
                                 <span className="text-emerald-300 font-mono">
-                                    {formatAmount(tradeData?.fundingMeta?.funded_amount)} {tradeData?.asset}
+                                    {formatAmount(
+                                        tradeData?.fundingMeta?.funded_amount,
+                                        tradeData?.assetId || tradeData?.asset,
+                                    )} {tradeData?.asset}
                                 </span>
                             </div>
                             <div className="flex justify-between">
@@ -476,12 +991,33 @@ export default function SellFlow() {
                             </div>
                         </div>
 
-                        <button
-                            onClick={resetToDeposit}
-                            className="px-8 py-3 bg-white/10 hover:bg-white/20 text-white rounded-xl transition-all"
-                        >
-                            Create Another Deposit
-                        </button>
+                        {fundingError && (
+                            <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3 text-sm text-red-100 max-w-md mx-auto">
+                                {fundingError}
+                            </div>
+                        )}
+
+                        <div className="flex flex-wrap items-center justify-center gap-3">
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    const depositId = Number(tradeData?.depositId || 0);
+                                    if (!Number.isInteger(depositId) || depositId <= 0) return;
+                                    void handleWithdrawLiquidity(depositId);
+                                }}
+                                disabled={!Number.isInteger(Number(tradeData?.depositId || 0)) || withdrawingDepositId !== null}
+                                className="px-6 py-3 bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white rounded-xl transition-all"
+                            >
+                                {withdrawingDepositId === Number(tradeData?.depositId || 0) ? "Withdrawing..." : "Withdraw Liquidity"}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={resetToDeposit}
+                                className="px-8 py-3 bg-white/10 hover:bg-white/20 text-white rounded-xl transition-all"
+                            >
+                                Create New Deposit Intent
+                            </button>
+                        </div>
                     </div>
                 )}
             </div>

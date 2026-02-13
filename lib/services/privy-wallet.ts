@@ -5,9 +5,41 @@ import { providerUrl, helperUrl } from "./near-network";
 // near-api-js v7 exports action creators under the 'actions' object
 const { functionCall } = actions;
 const TESTNET_HELPER_URL = helperUrl;
-const WALLET_PROXY_INIT_RETRY_DELAY_MS = 800;
-const WALLET_PROXY_INIT_MAX_WAIT_MS = 120_000;
-const WALLET_PROXY_PREWARM_MAX_WAIT_MS = 25_000;
+
+function readPositiveIntEnv(
+    name: string,
+    fallback: number,
+    bounds?: { min?: number; max?: number },
+): number {
+    const raw = process.env[name];
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+    const floored = Math.floor(parsed);
+    if (bounds?.min && floored < bounds.min) return bounds.min;
+    if (bounds?.max && floored > bounds.max) return bounds.max;
+    return floored;
+}
+
+const WALLET_PROXY_INIT_RETRY_DELAY_MS = readPositiveIntEnv(
+    "NEXT_PUBLIC_PRIVY_WALLET_INIT_RETRY_DELAY_MS",
+    800,
+    { min: 250, max: 15_000 },
+);
+const WALLET_PROXY_INIT_MAX_WAIT_MS = readPositiveIntEnv(
+    "NEXT_PUBLIC_PRIVY_WALLET_INIT_MAX_WAIT_MS",
+    240_000,
+    { min: 15_000, max: 900_000 },
+);
+const WALLET_PROXY_SIGN_ATTEMPT_TIMEOUT_MS = readPositiveIntEnv(
+    "NEXT_PUBLIC_PRIVY_WALLET_SIGN_ATTEMPT_TIMEOUT_MS",
+    20_000,
+    { min: 3_000, max: 120_000 },
+);
+const WALLET_PROXY_PREWARM_MAX_WAIT_MS = readPositiveIntEnv(
+    "NEXT_PUBLIC_PRIVY_WALLET_PREWARM_MAX_WAIT_MS",
+    45_000,
+    { min: 10_000, max: WALLET_PROXY_INIT_MAX_WAIT_MS },
+);
 const TX_SEND_MAX_RETRIES_ON_WALLET_INIT = 2;
 const TX_SEND_RETRY_DELAY_MS = 1500;
 
@@ -88,12 +120,46 @@ export class PrivyNearSigner extends Signer {
         return (
             message.includes("wallet proxy not initialized")
             || message.includes("wallet is still initializing")
+            || message.includes("wallet proxy is not initialized")
+            || message.includes("wallet has not been initialized")
+            || message.includes("wallet is initializing")
+            || message.includes("wallet proxy initialization")
         );
     }
 
     private async waitForWalletProxyInitialization(attempt: number) {
         const delay = WALLET_PROXY_INIT_RETRY_DELAY_MS + Math.min((attempt - 1) * 200, 2000);
         await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+
+    private async signRawHashWithTimeout(
+        hashWithPrefix: string,
+        timeoutMs: number,
+        context: string,
+    ): Promise<string> {
+        let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+        try {
+            const response = await Promise.race([
+                this.signRawHash({
+                    address: this.accountId,
+                    chainType: "near",
+                    hash: hashWithPrefix,
+                }),
+                new Promise<never>((_, reject) => {
+                    timeoutHandle = setTimeout(() => {
+                        reject(
+                            new Error(
+                                `Wallet proxy not initialized (${context} signing timed out after ${Math.ceil(timeoutMs / 1000)}s)`,
+                            ),
+                        );
+                    }, timeoutMs);
+                }),
+            ]);
+
+            return response.signature;
+        } finally {
+            if (timeoutHandle) clearTimeout(timeoutHandle);
+        }
     }
 
     private async signHashWithWalletInitRetry(
@@ -107,12 +173,19 @@ export class PrivyNearSigner extends Signer {
         let lastError: unknown = null;
 
         while (Date.now() - startedAt < maxWaitMs) {
+            const elapsedMs = Date.now() - startedAt;
+            const remainingMs = Math.max(maxWaitMs - elapsedMs, 0);
+            const perAttemptTimeoutMs = Math.max(
+                1_000,
+                Math.min(WALLET_PROXY_SIGN_ATTEMPT_TIMEOUT_MS, remainingMs),
+            );
+
             try {
-                const { signature: signatureHex } = await this.signRawHash({
-                    address: this.accountId,
-                    chainType: "near",
-                    hash: hashWithPrefix,
-                });
+                const signatureHex = await this.signRawHashWithTimeout(
+                    hashWithPrefix,
+                    perAttemptTimeoutMs,
+                    context,
+                );
                 return signatureHex;
             } catch (error) {
                 lastError = error;
@@ -135,7 +208,7 @@ export class PrivyNearSigner extends Signer {
             const waitedSec = Math.floor(maxWaitMs / 1000);
             throw new Error(
                 `Wallet initialization is taking longer than expected (waited ${waitedSec}s). ` +
-                "Please wait a bit and try again."
+                "Please wait a bit and try again. If this keeps happening, reconnect your wallet."
             );
         }
 

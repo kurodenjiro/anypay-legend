@@ -13,7 +13,7 @@ pub mod chains;
 const MPC_CONTRACT_ID: &str = "v1.signer-prod.testnet";
 
 const DEFAULT_V2_STORAGE_FEE_YOCTO: u128 = 50_000_000_000_000_000_000_000; // 0.05 NEAR
-const DEFAULT_TOPUP_WINDOW_MS: u64 = 3_600_000; // 60 minutes
+const DEFAULT_TOPUP_WINDOW_MS: u64 = 10_800_000; // 3 hours
 const DEFAULT_MAX_QUOTE_ROTATIONS: u16 = 48;
 const MAX_VIEW_LIMIT: usize = 200;
 
@@ -135,6 +135,20 @@ pub struct Intent {
     pub status: IntentStatus,
     pub recipient: String,
     pub chain: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[cfg_attr(feature = "abi", derive(JsonSchema))]
+#[serde(crate = "near_sdk::serde")]
+pub struct IntentTransferDetailsView {
+    pub intent_hash: String,
+    pub deposit_id: u64,
+    pub amount: u128,
+    pub currency_code: String,
+    pub payment_method_raw: String,
+    pub platform: String,
+    pub tagname: String,
+    pub memo: String,
 }
 
 #[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, PartialEq, Debug)]
@@ -300,6 +314,10 @@ impl Contract {
             !payment_methods.is_empty(),
             "At least one payment method required"
         );
+        assert!(
+            Self::extract_payment_details(&payment_methods).is_some(),
+            "payment_methods must include platform::tagname"
+        );
 
         self.deposit_counter += 1;
         let deposit_id = self.deposit_counter;
@@ -400,6 +418,10 @@ impl Contract {
         assert!(
             !payment_methods.is_empty(),
             "At least one payment method required"
+        );
+        assert!(
+            Self::extract_payment_details(&payment_methods).is_some(),
+            "payment_methods must include platform::tagname"
         );
         assert!(!asset_id.trim().is_empty(), "asset_id is required");
         assert!(!refund_to.trim().is_empty(), "refund_to is required");
@@ -826,6 +848,23 @@ impl Contract {
         self.sign_transaction(intent)
     }
 
+    pub fn fulfill_intent_with_proof(&mut self, intent_hash: String, proof: String) -> Promise {
+        let normalized_proof = proof.trim();
+        assert!(!normalized_proof.is_empty(), "proof is required");
+        assert!(
+            normalized_proof.len() <= 8_192,
+            "proof payload is too large"
+        );
+
+        env::log_str(&format!(
+            "Intent proof submitted: {} ({} bytes)",
+            intent_hash,
+            normalized_proof.len()
+        ));
+
+        self.fulfill_intent(intent_hash)
+    }
+
     pub fn release_intent(&mut self, intent_hash: String) -> Promise {
         let caller = env::predecessor_account_id();
         let mut intent = self.intents.get(&intent_hash).expect("Intent not found");
@@ -894,6 +933,21 @@ impl Contract {
 
     pub fn get_intent(&self, intent_hash: String) -> Option<Intent> {
         self.intents.get(&intent_hash)
+    }
+
+    pub fn get_intent_transfer_details(&self, intent_hash: String) -> Option<IntentTransferDetailsView> {
+        let intent = self.intents.get(&intent_hash)?;
+        let (platform, tagname) = Self::parse_payment_method(&intent.payment_method);
+        Some(IntentTransferDetailsView {
+            intent_hash: intent.intent_hash.clone(),
+            deposit_id: intent.deposit_id,
+            amount: intent.amount,
+            currency_code: intent.currency_code.clone(),
+            payment_method_raw: intent.payment_method.clone(),
+            platform,
+            tagname,
+            memo: Self::build_intent_transfer_memo(&intent.intent_hash, intent.deposit_id),
+        })
     }
 
     pub fn get_account_intents(&self, account_id: AccountId) -> Vec<String> {
@@ -1112,5 +1166,33 @@ impl Contract {
     fn normalized_limit(&self, limit: Option<u64>) -> usize {
         let raw = limit.unwrap_or(50) as usize;
         raw.clamp(1, MAX_VIEW_LIMIT)
+    }
+
+    fn extract_payment_details(payment_methods: &[String]) -> Option<(String, String)> {
+        for raw in payment_methods {
+            let (platform, tagname) = Self::parse_payment_method(raw);
+            if !platform.is_empty() && !tagname.is_empty() {
+                return Some((platform, tagname));
+            }
+        }
+        None
+    }
+
+    fn parse_payment_method(raw: &str) -> (String, String) {
+        let normalized = raw.trim();
+        if normalized.is_empty() {
+            return (String::new(), String::new());
+        }
+
+        if let Some((left, right)) = normalized.split_once("::") {
+            return (left.trim().to_lowercase(), right.trim().to_string());
+        }
+
+        (normalized.to_lowercase(), String::new())
+    }
+
+    fn build_intent_transfer_memo(intent_hash: &str, deposit_id: u64) -> String {
+        let suffix = intent_hash.strip_prefix("intent:").unwrap_or(intent_hash);
+        format!("anypay:{}:{}", deposit_id, suffix)
     }
 }

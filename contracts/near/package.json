@@ -10,7 +10,7 @@
     "test": "node test-flow.js",
     "test:testnet": "node testnet-integration.js",
     "test:testnet:write": "RUN_WRITE_TESTS=true node testnet-integration.js",
-    "relayer:start": "ts-node --project relayer/tsconfig.json relayer/index.ts",
+    "relayer:start": "node --experimental-strip-types --experimental-specifier-resolution=node relayer/index.ts",
     "migrate:v2": "node migrate-v2.js",
     "deploy:v2": "node deploy-v2.js"
   },

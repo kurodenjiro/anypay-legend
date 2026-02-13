@@ -4,7 +4,7 @@ const envNetworkId = process.env.NEXT_PUBLIC_NEAR_NETWORK_ID;
 export const NetworkId: SupportedNetworkId = envNetworkId === "testnet" ? "testnet" : "testnet";
 
 const defaultContractPerNetwork: Record<SupportedNetworkId, string> = {
-    testnet: "anypay-legend-final.testnet",
+    testnet: "anypay-v2-1770979784.agenttest1.testnet",
 };
 
 const defaultRpcPerNetwork: Record<SupportedNetworkId, string> = {

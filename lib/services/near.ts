@@ -6,6 +6,11 @@ import { keccak256, toBytes, parseUnits, formatUnits } from 'viem';
 import { JsonRpcProvider } from 'near-api-js';
 import { PrivyNearWallet } from './privy-wallet';
 import { NetworkId, providerUrl, HelloNearContract } from "./near-network";
+import {
+    getMinDepositAmountByAssetId,
+    getAssetDecimalsByAssetId,
+    DEFAULT_INTENTS_MIN_DEPOSIT_AMOUNT,
+} from "./intents-pricing";
 
 // MPC Contract ID (Testnet)
 const MPC_CONTRACT_ID = 'v1.signer-prod.testnet';
@@ -14,12 +19,17 @@ const CONTRACT_ID = HelloNearContract;
 const V2_STORAGE_FEE_YOCTO =
     process.env.NEXT_PUBLIC_NEAR_V2_STORAGE_FEE_YOCTO || "50000000000000000000000"; // 0.05 NEAR
 const DEPOSIT_FLOW_MODE = process.env.NEXT_PUBLIC_DEPOSIT_FLOW === "legacy" ? "legacy" : "v2";
+const STORAGE_COST_PER_BYTE_YOCTO = 10_000_000_000_000_000_000n;
 
 function normalizeAmountInput(value: string): string {
     return String(value ?? "").trim().replace(",", ".");
 }
 
 function toYoctoAmount(value: string, label: string): string {
+    return toAtomicAmount(value, label, 24);
+}
+
+function toAtomicAmount(value: string, label: string, decimals: number): string {
     const normalized = normalizeAmountInput(value);
     if (!normalized) {
         throw new Error(`${label} is required`);
@@ -30,14 +40,63 @@ function toYoctoAmount(value: string, label: string): string {
     }
 
     try {
-        const yocto = parseUnits(normalized, 24).toString();
-        if (!/^\d+$/.test(yocto)) {
+        const atomic = parseUnits(normalized, decimals).toString();
+        if (!/^\d+$/.test(atomic)) {
             throw new Error("not an integer");
         }
-        return yocto;
+        return atomic;
     } catch (error: any) {
         throw new Error(`${label} is invalid: ${error?.message || String(error)}`);
     }
+}
+
+function inferDecimalsFromAssetId(assetId: string): number {
+    const normalized = String(assetId || "").toLowerCase();
+    if (normalized.includes("btc") || normalized.includes("zec")) return 8;
+    if (normalized.includes("eth")) return 18;
+    return 24;
+}
+
+function parseStorageUsage(accountState: AccountState): bigint {
+    const maybeState = accountState as AccountState & { storage_usage?: number | string };
+    const raw = maybeState.storage_usage ?? 0;
+    try {
+        const parsed = BigInt(String(raw));
+        return parsed > 0n ? parsed : 0n;
+    } catch {
+        return 0n;
+    }
+}
+
+function normalizeErrorMessage(error: unknown): string {
+    if (error instanceof Error && error.message) return error.message;
+    if (typeof error === "string") return error;
+    return String(error ?? "Unknown error");
+}
+
+function isInsufficientStateBalanceError(error: unknown): boolean {
+    const message = normalizeErrorMessage(error).toLowerCase();
+    return (
+        message.includes("lackbalanceforstate")
+        || message.includes("lacks balance")
+        || message.includes("enough balance to cover storage")
+        || message.includes("for state")
+    );
+}
+
+async function resolveAssetDecimals(assetId: string): Promise<number> {
+    // 1Click quote amount for these assets is expected in origin-chain atomic units
+    // (BTC satoshis, ETH wei, ZEC zats). Prefer deterministic mapping first.
+    const inferred = inferDecimalsFromAssetId(assetId);
+    if (inferred !== 24) {
+        return inferred;
+    }
+
+    const fromOneClick = await getAssetDecimalsByAssetId(assetId).catch(() => null);
+    if (typeof fromOneClick === "number" && Number.isFinite(fromOneClick) && fromOneClick >= 0) {
+        return fromOneClick;
+    }
+    return inferred;
 }
 
 // Simple state management without framework dependency
@@ -50,6 +109,10 @@ export interface NearState {
 export interface NearBalance {
     yocto: string;
     near: string;
+    totalYocto?: string;
+    totalNear?: string;
+    storageLockedYocto?: string;
+    storageLockedNear?: string;
 }
 
 export type FundingStatusV2 =
@@ -91,6 +154,46 @@ export interface DepositSummaryV2 {
     quote_expires_at_ms: number;
     status: FundingStatusV2;
     updated_at_ms: number;
+}
+
+export interface DepositRecord {
+    deposit_id: number;
+    depositor: string;
+    delegate?: string | null;
+    token: string;
+    total_deposit: string;
+    remaining_deposits: string;
+    outstanding_intents: string;
+    min_intent_amount: string;
+    max_intent_amount: string;
+    timestamp: number;
+    payment_methods: string[];
+}
+
+export type IntentRecordStatus = "Signaled" | "Fulfilled" | "Cancelled" | "Released" | string;
+
+export interface IntentRecord {
+    intent_hash: string;
+    buyer: string;
+    deposit_id: number;
+    amount: string;
+    timestamp: number;
+    payment_method: string;
+    currency_code: string;
+    status: IntentRecordStatus;
+    recipient: string;
+    chain: string;
+}
+
+export interface IntentTransferDetailsRecord {
+    intent_hash: string;
+    deposit_id: number;
+    amount: string;
+    currency_code: string;
+    payment_method_raw: string;
+    platform: string;
+    tagname: string;
+    memo: string;
 }
 
 let stateListeners: Array<(state: NearState) => void> = [];
@@ -238,11 +341,21 @@ export class NearService {
 
         const provider = new JsonRpcProvider({ url: providerUrl });
         const accountState = await provider.viewAccount({ accountId: account });
-        const yocto = String(accountState.amount);
+        const totalYocto = BigInt(String(accountState.amount || "0"));
+        const storageUsage = parseStorageUsage(accountState);
+        const storageLockedYocto = storageUsage * STORAGE_COST_PER_BYTE_YOCTO;
+        const spendableYocto =
+            totalYocto > storageLockedYocto
+                ? totalYocto - storageLockedYocto
+                : 0n;
 
         return {
-            yocto,
-            near: formatUnits(BigInt(yocto), 24),
+            yocto: spendableYocto.toString(),
+            near: formatUnits(spendableYocto, 24),
+            totalYocto: totalYocto.toString(),
+            totalNear: formatUnits(totalYocto, 24),
+            storageLockedYocto: storageLockedYocto.toString(),
+            storageLockedNear: formatUnits(storageLockedYocto, 24),
         };
     }
 
@@ -322,27 +435,63 @@ export class NearService {
     ) {
         if (!assetId) throw new Error("assetId is required");
         if (!refundTo) throw new Error("refundTo is required");
-        const expectedAmountYocto = toYoctoAmount(expectedAmount, "Expected amount");
-        const minIntentAmountYocto = toYoctoAmount(minIntentAmount, "Min intent amount");
-        const maxIntentAmountYocto = toYoctoAmount(maxIntentAmount, "Max intent amount");
+        const assetDecimals = await resolveAssetDecimals(assetId);
+        const expectedAmountAtomic = toAtomicAmount(expectedAmount, "Expected amount", assetDecimals);
+        const minIntentAmountAtomic = toAtomicAmount(minIntentAmount, "Min intent amount", assetDecimals);
+        const maxIntentAmountAtomic = toAtomicAmount(maxIntentAmount, "Max intent amount", assetDecimals);
+        const minimumAmountDisplay = await getMinDepositAmountByAssetId(
+            assetId,
+            undefined,
+        ).catch(
+            () => DEFAULT_INTENTS_MIN_DEPOSIT_AMOUNT,
+        );
+        let minimumAmountAtomic: bigint;
+        try {
+            minimumAmountAtomic = parseUnits(String(minimumAmountDisplay), assetDecimals);
+        } catch {
+            minimumAmountAtomic = parseUnits(DEFAULT_INTENTS_MIN_DEPOSIT_AMOUNT, assetDecimals);
+        }
+        if (BigInt(expectedAmountAtomic) < minimumAmountAtomic) {
+            throw new Error(`Expected amount must be at least ${minimumAmountDisplay}`);
+        }
 
-        return await this._signAndSendTransaction(CONTRACT_ID, [{
-            type: "FunctionCall",
-            params: {
-                methodName: "register_deposit_intent_v2",
-                args: {
-                    asset_id: assetId,
-                    expected_amount: expectedAmountYocto,
-                    min_intent_amount: minIntentAmountYocto,
-                    max_intent_amount: maxIntentAmountYocto,
-                    payment_methods: paymentMethods,
-                    delegate: delegate || null,
-                    refund_to: refundTo,
-                },
-                gas: "60000000000000",
-                deposit: V2_STORAGE_FEE_YOCTO,
+        try {
+            return await this._signAndSendTransaction(CONTRACT_ID, [{
+                type: "FunctionCall",
+                params: {
+                    methodName: "register_deposit_intent_v2",
+                    args: {
+                        asset_id: assetId,
+                        expected_amount: expectedAmountAtomic,
+                        min_intent_amount: minIntentAmountAtomic,
+                        max_intent_amount: maxIntentAmountAtomic,
+                        payment_methods: paymentMethods,
+                        delegate: delegate || null,
+                        refund_to: refundTo,
+                    },
+                    gas: "60000000000000",
+                    deposit: V2_STORAGE_FEE_YOCTO,
+                }
+            }]);
+        } catch (error: unknown) {
+            if (isInsufficientStateBalanceError(error)) {
+                const feeNear = formatUnits(BigInt(V2_STORAGE_FEE_YOCTO), 24);
+                throw new Error(
+                    `Insufficient spendable NEAR to create a funding intent. `
+                    + `You need at least ${feeNear} NEAR for storage fee plus gas.`,
+                );
             }
-        }]);
+
+            const message = normalizeErrorMessage(error);
+            if (message.includes("Attached deposit is below V2 storage fee")) {
+                const feeNear = formatUnits(BigInt(V2_STORAGE_FEE_YOCTO), 24);
+                throw new Error(
+                    `Funding storage fee mismatch. Contract requires at least ${feeNear} NEAR attached.`,
+                );
+            }
+
+            throw error instanceof Error ? error : new Error(message);
+        }
     }
 
     /**
@@ -424,7 +573,14 @@ export class NearService {
         chain: string
     ) {
         if (!this.wallet || !this.accountId) throw new Error("Not signed in");
-        const amountYocto = toYoctoAmount(amount, "Intent amount");
+        const deposit = await this.getDeposit(deposit_id).catch(() => null);
+        const amountAtomic = deposit?.token
+            ? toAtomicAmount(
+                amount,
+                "Intent amount",
+                await resolveAssetDecimals(deposit.token),
+            )
+            : toYoctoAmount(amount, "Intent amount");
 
         if (typeof this.wallet.signAndSendTransaction !== 'function') {
             throw new Error(`Wallet type not supported for NEAR transactions.`);
@@ -439,7 +595,7 @@ export class NearService {
                     methodName: "signal_intent",
                     args: {
                         deposit_id,
-                        amount: amountYocto,
+                        amount: amountAtomic,
                         payment_method: paymentMethod,
                         currency_code: currencyCode,
                         recipient,
@@ -496,6 +652,39 @@ export class NearService {
                     methodName: "fulfill_intent",
                     args: { intent_hash: intentHash },
                     gas: "30000000000000",
+                    deposit: "0"
+                }
+            }]
+        });
+    }
+
+    /**
+     * Fulfill intent and submit a proof payload in the same on-chain call.
+     * Proof is stored in transaction arguments and contract logs for auditability.
+     */
+    async fulfillIntentWithProof(intentHash: string, proof: unknown) {
+        if (!this.wallet || !this.accountId) throw new Error("Not signed in");
+        if (typeof this.wallet.signAndSendTransaction !== 'function') {
+            throw new Error(`Wallet type not supported for NEAR transactions.`);
+        }
+
+        const serializedProof = JSON.stringify(proof ?? {});
+        if (!serializedProof || serializedProof === "{}") {
+            throw new Error("Proof payload is empty");
+        }
+
+        return await this.wallet.signAndSendTransaction({
+            signerId: this.accountId,
+            receiverId: CONTRACT_ID,
+            actions: [{
+                type: "FunctionCall",
+                params: {
+                    methodName: "fulfill_intent_with_proof",
+                    args: {
+                        intent_hash: intentHash,
+                        proof: serializedProof,
+                    },
+                    gas: "50000000000000",
                     deposit: "0"
                 }
             }]
@@ -578,7 +767,7 @@ export class NearService {
     /**
      * Helper for view calls
      */
-    private async view(methodName: string, args: any = {}) {
+    private async view<T = unknown>(methodName: string, args: any = {}): Promise<T> {
         const provider = new JsonRpcProvider({ url: providerUrl });
         const result = await provider.query({
             request_type: 'call_function',
@@ -589,15 +778,15 @@ export class NearService {
         });
 
         // @ts-ignore
-        return JSON.parse(Buffer.from(result.result).toString());
+        return JSON.parse(Buffer.from(result.result).toString()) as T;
     }
 
-    async getDeposit(depositId: number) {
-        return await this.view('get_deposit', { deposit_id: depositId });
+    async getDeposit(depositId: number): Promise<DepositRecord | null> {
+        return await this.view<DepositRecord | null>('get_deposit', { deposit_id: depositId });
     }
 
     async getDepositFundingV2(depositId: number): Promise<DepositFundingMetaV2 | null> {
-        return await this.view('get_deposit_funding_v2', { deposit_id: depositId });
+        return await this.view<DepositFundingMetaV2 | null>('get_deposit_funding_v2', { deposit_id: depositId });
     }
 
     async getOpenDepositsByAssetV2(
@@ -605,7 +794,7 @@ export class NearService {
         fromIndex = 0,
         limit = 20,
     ): Promise<DepositSummaryV2[]> {
-        return await this.view('get_open_deposits_by_asset_v2', {
+        return await this.view<DepositSummaryV2[]>('get_open_deposits_by_asset_v2', {
             asset_id: assetId,
             from_index: fromIndex,
             limit,
@@ -617,7 +806,7 @@ export class NearService {
         fromIndex = 0,
         limit = 50,
     ): Promise<number[]> {
-        return await this.view('get_deposits_by_funding_status_v2', {
+        return await this.view<number[]>('get_deposits_by_funding_status_v2', {
             status,
             from_index: fromIndex,
             limit,
@@ -628,49 +817,56 @@ export class NearService {
         return await this.view('get_v2_config');
     }
 
-    async getAccountDeposits(accountId?: string) {
+    async getAccountDeposits(accountId?: string): Promise<DepositRecord[]> {
         const account = accountId || this.accountId;
         if (!account) throw new Error("No account specified");
 
         // Contract returns Vec<u64> (Deposit IDs)
-        const depositIds: number[] = await this.view('get_account_deposits', { account_id: account });
+        const depositIds: number[] = await this.view<number[]>('get_account_deposits', { account_id: account });
 
         // Fetch full deposit details for each ID
         const deposits = await Promise.all(
             depositIds.map(id => this.getDeposit(id))
         );
 
-        return deposits.filter(d => d !== null);
+        return deposits.filter((d): d is DepositRecord => d !== null);
     }
 
-    async getIntent(intentHash: string) {
-        return await this.view('get_intent', { intent_hash: intentHash });
+    async getIntent(intentHash: string): Promise<IntentRecord | null> {
+        return await this.view<IntentRecord | null>('get_intent', { intent_hash: intentHash });
     }
 
-    async getAccountIntents(accountId?: string) {
+    async getIntentTransferDetails(intentHash: string): Promise<IntentTransferDetailsRecord | null> {
+        return await this.view<IntentTransferDetailsRecord | null>(
+            'get_intent_transfer_details',
+            { intent_hash: intentHash },
+        );
+    }
+
+    async getAccountIntents(accountId?: string): Promise<IntentRecord[]> {
         const account = accountId || this.accountId;
         if (!account) throw new Error("No account specified");
 
         // Contract returns Vec<String> (Intent Hashes)
-        const intentHashes: string[] = await this.view('get_account_intents', { account_id: account });
+        const intentHashes: string[] = await this.view<string[]>('get_account_intents', { account_id: account });
 
         // Fetch full intent details for each hash
         const intents = await Promise.all(
             intentHashes.map(hash => this.getIntent(hash))
         );
 
-        return intents.filter(i => i !== null);
+        return intents.filter((i): i is IntentRecord => i !== null);
     }
 
-    async getDepositIntents(depositId: number) {
+    async getDepositIntents(depositId: number): Promise<IntentRecord[]> {
         // Contract returns Vec<String> (Intent Hashes)
-        const intentHashes: string[] = await this.view('get_deposit_intents', { deposit_id: depositId });
+        const intentHashes: string[] = await this.view<string[]>('get_deposit_intents', { deposit_id: depositId });
 
         const intents = await Promise.all(
             intentHashes.map(hash => this.getIntent(hash))
         );
 
-        return intents.filter(i => i !== null);
+        return intents.filter((i): i is IntentRecord => i !== null);
     }
 
     async getPaymentMethod(name: string) {

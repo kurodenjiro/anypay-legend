@@ -51,10 +51,16 @@ export function isTerminalStatus(status: IntentsStatus): boolean {
 }
 
 export class IntentsClient {
+  private readonly baseUrl: string;
+  private readonly apiKey?: string;
+
   constructor(
-    private readonly baseUrl: string,
-    private readonly apiKey?: string,
-  ) {}
+    baseUrl: string,
+    apiKey?: string,
+  ) {
+    this.baseUrl = baseUrl;
+    this.apiKey = apiKey;
+  }
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
     const headers: Record<string, string> = {

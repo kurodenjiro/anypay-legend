@@ -1,43 +1,25 @@
 #!/usr/bin/env node
 
-const os = require("os");
-const path = require("path");
-const { connect, keyStores, KeyPair } = require("near-api-js");
-
 async function main() {
-  const networkId = process.env.NETWORK_ID || "testnet";
+  const { Account, JsonRpcProvider } = await import("near-api-js");
   const rpcUrl = process.env.RPC_URL || "https://test.rpc.fastnear.com";
   const contractId = process.env.CONTRACT_ID;
   const ownerId = process.env.OWNER_ID;
-  const ownerPrivateKey = process.env.OWNER_PRIVATE_KEY;
+  const ownerPrivateKey = process.env.OWNER_PRIVATE_KEY?.trim();
   const oracleAccountId = process.env.ORACLE_ACCOUNT_ID || ownerId;
   const storageFee = process.env.V2_STORAGE_FEE_YOCTO || "50000000000000000000000";
-  const topupWindowMs = Number(process.env.TOPUP_WINDOW_MS || "3600000");
+  const topupWindowMs = Number(process.env.TOPUP_WINDOW_MS || "10800000");
 
-  if (!contractId || !ownerId) {
-    throw new Error("CONTRACT_ID and OWNER_ID are required");
+  if (!contractId || !ownerId || !ownerPrivateKey) {
+    throw new Error("CONTRACT_ID, OWNER_ID, and OWNER_PRIVATE_KEY are required");
   }
 
-  const keyStore = ownerPrivateKey
-    ? new keyStores.InMemoryKeyStore()
-    : new keyStores.UnencryptedFileSystemKeyStore(path.join(os.homedir(), ".near-credentials"));
-
-  if (ownerPrivateKey) {
-    await keyStore.setKey(networkId, ownerId, KeyPair.fromString(ownerPrivateKey));
-  }
-
-  const near = await connect({
-    networkId,
-    keyStore,
-    nodeUrl: rpcUrl,
-    walletUrl: `https://wallet.${networkId}.near.org`,
-    helperUrl: `https://helper.${networkId}.near.org`,
-  });
-
-  const owner = await near.account(ownerId);
+  const provider = new JsonRpcProvider({ url: rpcUrl });
+  const owner = new Account(ownerId, provider, ownerPrivateKey);
+  await owner.getState();
 
   console.log("Running migrate_v2...");
-  await owner.functionCall({
+  await owner.callFunction({
     contractId,
     methodName: "migrate_v2",
     args: {
@@ -45,8 +27,8 @@ async function main() {
       storage_fee_yocto: storageFee,
       topup_window_ms: topupWindowMs,
     },
-    gas: "150000000000000",
-    attachedDeposit: "0",
+    gas: 150_000_000_000_000n,
+    deposit: 0n,
   });
 
   console.log("Migration complete");

@@ -94,6 +94,7 @@ export function PrivyNearConnector() {
     const { createWallet } = useCreateWallet();
     const { signRawHash } = useSignRawHash();
     const syncingRef = useRef(false);
+    const lastBoundSignRawHashRef = useRef<unknown>(null);
 
     // Handy global debugger for quick inspection in the browser console
     useEffect(() => {
@@ -114,6 +115,7 @@ export function PrivyNearConnector() {
 
         if (!authenticated) {
             syncingRef.current = false;
+            lastBoundSignRawHashRef.current = null;
             delete window.syncPrivyNearConnection;
             nearService.logout({ silent: true });
             return;
@@ -157,13 +159,18 @@ export function PrivyNearConnector() {
                 }
 
                 // Avoid re-wrapping the same wallet
-                if (nearService.accountId === nearWallet.address && nearService.wallet instanceof PrivyNearWallet) {
+                if (
+                    nearService.accountId === nearWallet.address
+                    && nearService.wallet instanceof PrivyNearWallet
+                    && lastBoundSignRawHashRef.current === signRawHash
+                ) {
                     return;
                 }
 
                 const adapter = new PrivyNearWallet(nearWallet.address, signRawHash, nearWallet.publicKey);
 
                 await nearService.setWallet(adapter, nearWallet.address);
+                lastBoundSignRawHashRef.current = signRawHash;
                 void adapter.warmupWalletProxy();
 
                 window._debug_privy_wallet = adapter;

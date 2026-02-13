@@ -1,9 +1,7 @@
 #!/usr/bin/env node
 
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
-const { connect, keyStores, KeyPair, providers, transactions } = require("near-api-js");
 
 const DEFAULT_WASM_PATH = path.join(
   __dirname,
@@ -23,7 +21,8 @@ function parseBool(value, fallback = false) {
 }
 
 async function viewCall(rpcUrl, contractId, methodName, args = {}) {
-  const provider = new providers.JsonRpcProvider({ url: rpcUrl });
+  const { JsonRpcProvider } = await import("near-api-js");
+  const provider = new JsonRpcProvider({ url: rpcUrl });
   const result = await provider.query({
     request_type: "call_function",
     account_id: contractId,
@@ -36,6 +35,7 @@ async function viewCall(rpcUrl, contractId, methodName, args = {}) {
 }
 
 async function main() {
+  const { Account, JsonRpcProvider, actions } = await import("near-api-js");
   const networkId = process.env.NETWORK_ID?.trim() || "testnet";
   const rpcUrl = process.env.RPC_URL?.trim() || "https://test.rpc.fastnear.com";
   const contractId = requireEnv("CONTRACT_ID");
@@ -45,7 +45,7 @@ async function main() {
   const deployerPrivateKey = process.env.DEPLOYER_PRIVATE_KEY?.trim() || ownerPrivateKey;
   const oracleAccountId = process.env.ORACLE_ACCOUNT_ID?.trim() || ownerId;
   const storageFee = process.env.V2_STORAGE_FEE_YOCTO?.trim() || "50000000000000000000000";
-  const topupWindowMs = Number(process.env.TOPUP_WINDOW_MS || "3600000");
+  const topupWindowMs = Number(process.env.TOPUP_WINDOW_MS || "10800000");
   const runMigration = parseBool(process.env.RUN_MIGRATION, true);
   const runDeploy = parseBool(process.env.RUN_DEPLOY, true);
   const wasmPath = process.env.WASM_PATH?.trim() || DEFAULT_WASM_PATH;
@@ -58,31 +58,23 @@ async function main() {
     throw new Error(`WASM file not found: ${wasmPath}`);
   }
 
-  const keyStore =
-    ownerPrivateKey || deployerPrivateKey
-      ? new keyStores.InMemoryKeyStore()
-      : new keyStores.UnencryptedFileSystemKeyStore(path.join(os.homedir(), ".near-credentials"));
-
-  if (ownerPrivateKey) {
-    await keyStore.setKey(networkId, ownerId, KeyPair.fromString(ownerPrivateKey));
+  if (runDeploy && !deployerPrivateKey) {
+    throw new Error("DEPLOYER_PRIVATE_KEY or OWNER_PRIVATE_KEY is required for deploy");
+  }
+  if (runMigration && !ownerPrivateKey) {
+    throw new Error("OWNER_PRIVATE_KEY is required for migration");
   }
 
-  if (deployerPrivateKey && deployerId !== ownerId) {
-    await keyStore.setKey(networkId, deployerId, KeyPair.fromString(deployerPrivateKey));
+  const provider = new JsonRpcProvider({ url: rpcUrl });
+  const owner = ownerPrivateKey ? new Account(ownerId, provider, ownerPrivateKey) : null;
+  const deployer = deployerPrivateKey ? new Account(deployerId, provider, deployerPrivateKey) : null;
+
+  if (owner) {
+    await owner.getState();
   }
-
-  const near = await connect({
-    networkId,
-    keyStore,
-    nodeUrl: rpcUrl,
-    walletUrl: `https://wallet.${networkId}.near.org`,
-    helperUrl: `https://helper.${networkId}.near.org`,
-  });
-
-  const owner = await near.account(ownerId);
-  await owner.state();
-  const deployer = await near.account(deployerId);
-  await deployer.state();
+  if (deployer) {
+    await deployer.getState();
+  }
 
   const wasm = fs.readFileSync(wasmPath);
 
@@ -90,7 +82,7 @@ async function main() {
     console.log("Deploying upgraded wasm...");
     await deployer.signAndSendTransaction({
       receiverId: contractId,
-      actions: [transactions.deployContract(wasm)],
+      actions: [actions.deployContract(wasm)],
     });
     console.log("✓ wasm deployed", { contractId, wasmPath, deployerId });
   } else {
@@ -99,7 +91,7 @@ async function main() {
 
   if (runMigration) {
     console.log("Running migrate_v2...");
-    await owner.functionCall({
+    await owner.callFunction({
       contractId,
       methodName: "migrate_v2",
       args: {
@@ -107,8 +99,8 @@ async function main() {
         storage_fee_yocto: storageFee,
         topup_window_ms: topupWindowMs,
       },
-      gas: "150000000000000",
-      attachedDeposit: "0",
+      gas: 150_000_000_000_000n,
+      deposit: 0n,
     });
     console.log("✓ migrate_v2 completed");
   } else {

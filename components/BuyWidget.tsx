@@ -3,8 +3,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatUnits } from "viem";
 import { nearService, type DepositSummaryV2 } from "@/lib/services/near";
-import { resolveIntentsAssetId } from "@/lib/services/asset-map";
+import {
+    resolveIntentsAssetId,
+    getRefundAddressHint,
+    isValidRefundAddress,
+} from "@/lib/services/asset-map";
 import { getUsdPriceByAssetId } from "@/lib/services/intents-pricing";
+import { parsePaymentMethod } from "@/lib/services/payment-method";
 
 interface BuyWidgetProps {
     onSignal: (data: any) => Promise<void>;
@@ -44,12 +49,17 @@ function formatAmount(amount: string): string {
     }
 }
 
-function getListingPaymentMethod(listing: DepositSummaryV2 | null): string {
-    const method = listing?.payment_methods?.[0];
-    if (typeof method === "string" && method.length > 0) {
-        return method;
-    }
-    return "venmo";
+function getListingPaymentInfo(listing: DepositSummaryV2 | null): {
+    raw: string;
+    method: string;
+    accountTag: string;
+} {
+    const parsed = parsePaymentMethod(listing?.payment_methods?.[0]);
+    return {
+        raw: parsed.raw,
+        method: parsed.method || "wise",
+        accountTag: parsed.accountTag,
+    };
 }
 
 function formatUsdValue(value: number): string {
@@ -64,6 +74,21 @@ function formatCryptoEstimate(value: number): string {
     if (!Number.isFinite(value) || value <= 0) return "0";
     if (value >= 1) return value.toFixed(6);
     return value.toFixed(8);
+}
+
+function trimTrailingZeros(value: string): string {
+    return value.replace(/\.?(0+)$/, "");
+}
+
+function toSignalAmount(value: number, symbol: string): string {
+    if (!Number.isFinite(value) || value <= 0) return "";
+    const normalizedSymbol = String(symbol || "").toUpperCase();
+    const precision = normalizedSymbol === "BTC" || normalizedSymbol === "ZEC"
+        ? 8
+        : normalizedSymbol === "ETH"
+            ? 12
+            : 8;
+    return trimTrailingZeros(value.toFixed(precision));
 }
 
 export default function BuyWidget({
@@ -91,6 +116,7 @@ export default function BuyWidget({
     const [isListingsLoading, setIsListingsLoading] = useState(false);
     const [listingsError, setListingsError] = useState("");
     const [assetUsdPrice, setAssetUsdPrice] = useState<number | null>(null);
+    const [recipientAddress, setRecipientAddress] = useState("");
 
     const assets = [
         { sym: "BTC", name: "Bitcoin", icon: "₿", network: "Bitcoin" },
@@ -108,7 +134,13 @@ export default function BuyWidget({
         return listings.find((item) => Number(item.deposit_id) === selectedListingId) || null;
     }, [selectedListingId, listings]);
 
-    const selectedPaymentMethod = getListingPaymentMethod(selectedListing);
+    const selectedListingPaymentInfo = useMemo(
+        () => getListingPaymentInfo(selectedListing),
+        [selectedListing],
+    );
+    const selectedPaymentMethod = selectedListingPaymentInfo.method;
+    const selectedPaymentMethodRaw = selectedListingPaymentInfo.raw || selectedPaymentMethod;
+    const selectedSellerAccountTag = selectedListingPaymentInfo.accountTag;
     const numericFiatAmount = Number(amount);
     const estimatedCryptoAmount = useMemo(() => {
         if (!Number.isFinite(numericFiatAmount) || numericFiatAmount <= 0 || !assetUsdPrice) {
@@ -116,6 +148,14 @@ export default function BuyWidget({
         }
         return numericFiatAmount / assetUsdPrice;
     }, [numericFiatAmount, assetUsdPrice]);
+    const signalAmount = useMemo(
+        () => toSignalAmount(estimatedCryptoAmount ?? 0, selectedToken.sym),
+        [estimatedCryptoAmount, selectedToken.sym],
+    );
+    const hasValidRecipientAddress = useMemo(
+        () => isValidRefundAddress(selectedToken.sym, recipientAddress),
+        [selectedToken.sym, recipientAddress],
+    );
 
     const loadListings = useCallback(async () => {
         setIsListingsLoading(true);
@@ -186,7 +226,7 @@ export default function BuyWidget({
     };
 
     const handleReview = () => {
-        if (!amount || !selectedListingId) return;
+        if (!amount || !selectedListingId || !signalAmount || !hasValidRecipientAddress) return;
         setStep("review");
     };
 
@@ -201,7 +241,8 @@ export default function BuyWidget({
         setIsSubmitting(true);
         try {
             await onSignal({
-                amount,
+                amount: signalAmount,
+                fiatAmount: amount,
                 mode: "buy",
                 depositId: selectedListingId,
                 candidateDepositIds: listings.map((item) => Number(item.deposit_id)),
@@ -211,7 +252,9 @@ export default function BuyWidget({
                     currency: selectedCurrency,
                 },
                 buyingAsset: { token: selectedToken },
-                recipient: "0xMyWallet...",
+                recipient: recipientAddress.trim(),
+                listingPaymentMethodRaw: selectedPaymentMethodRaw,
+                sellerAccountTag: selectedSellerAccountTag,
                 selectedListing,
             });
         } finally {
@@ -328,6 +371,7 @@ export default function BuyWidget({
                                 {listings.map((listing) => {
                                     const listingId = Number(listing.deposit_id);
                                     const isSelected = selectedListingId === listingId;
+                                    const paymentInfo = getListingPaymentInfo(listing);
 
                                     return (
                                         <button
@@ -342,7 +386,7 @@ export default function BuyWidget({
                                         >
                                             <div className="flex items-center justify-between text-xs text-gray-300">
                                                 <span>Deposit #{listingId}</span>
-                                                <span>{getListingPaymentMethod(listing)}</span>
+                                                <span>{paymentInfo.method}</span>
                                             </div>
                                             <div className="mt-1 flex items-center justify-between text-sm">
                                                 <span className="text-gray-400">Available</span>
@@ -354,6 +398,12 @@ export default function BuyWidget({
                                                 <span className="text-gray-500">Seller</span>
                                                 <span className="text-gray-300 font-mono">{shortAccountId(listing.depositor)}</span>
                                             </div>
+                                            {paymentInfo.accountTag && (
+                                                <div className="mt-1 flex items-center justify-between text-xs">
+                                                    <span className="text-gray-500">User Tagname</span>
+                                                    <span className="text-gray-200 font-mono">{paymentInfo.accountTag}</span>
+                                                </div>
+                                            )}
                                         </button>
                                     );
                                 })}
@@ -394,9 +444,30 @@ export default function BuyWidget({
                             </div>
                         </div>
 
+                        <div className="w-full bg-[#050505]/50 border border-white/5 rounded-2xl p-4 space-y-2">
+                            <label className="text-xs font-medium text-gray-400">
+                                Receive Address ({selectedToken.sym})
+                            </label>
+                            <input
+                                type="text"
+                                value={recipientAddress}
+                                onChange={(e) => setRecipientAddress(e.target.value)}
+                                placeholder={getRefundAddressHint(selectedToken.sym)}
+                                className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white outline-none focus:border-cyan-400/60"
+                            />
+                            <p className="text-xs text-gray-500">
+                                This is where your {selectedToken.sym} will be released after payment proof.
+                            </p>
+                            {recipientAddress.trim().length > 0 && !hasValidRecipientAddress && (
+                                <p className="text-xs text-amber-300">
+                                    Enter a valid {selectedToken.sym} address.
+                                </p>
+                            )}
+                        </div>
+
                         <button
                             onClick={handleReview}
-                            disabled={!amount || !selectedListingId}
+                            disabled={!amount || !selectedListingId || !signalAmount || !hasValidRecipientAddress}
                             className="w-full btn-primary py-4 text-base rounded-xl mt-4 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                             Review Order
@@ -445,8 +516,32 @@ export default function BuyWidget({
                                     <span className="text-white">{selectedPaymentMethod}</span>
                                 </div>
                                 <div className="flex justify-between items-center text-sm">
+                                    <span className="text-gray-400">Send Fiat To (Seller)</span>
+                                    <span className="text-white font-mono text-xs">
+                                        {selectedListing ? shortAccountId(selectedListing.depositor) : "N/A"}
+                                    </span>
+                                </div>
+                                <div className="flex justify-between items-center text-sm">
+                                    <span className="text-gray-400">User Tagname</span>
+                                    <span className="text-white font-mono text-xs">
+                                        {selectedSellerAccountTag || "N/A"}
+                                    </span>
+                                </div>
+                                <div className="flex justify-between items-center text-sm">
+                                    <span className="text-gray-400">Transfer Memo</span>
+                                    <span className="text-amber-300 font-mono text-xs">
+                                        Generated after signal
+                                    </span>
+                                </div>
+                                <div className="flex justify-between items-center text-sm">
                                     <span className="text-gray-400">Network</span>
                                     <span className="text-blue-400">{selectedToken.network}</span>
+                                </div>
+                                <div className="flex justify-between items-center text-sm">
+                                    <span className="text-gray-400">Receive Address</span>
+                                    <span className="text-white font-mono text-xs truncate w-56 text-right">
+                                        {recipientAddress || "Not set"}
+                                    </span>
                                 </div>
                                 <div className="flex justify-between items-center text-sm">
                                     <span className="text-gray-400">Asset ID</span>
@@ -457,8 +552,8 @@ export default function BuyWidget({
                             <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-3 flex gap-3">
                                 <span className="text-xl">ℹ️</span>
                                 <p className="text-xs text-blue-200/80 leading-relaxed">
-                                    You&apos;ll be matched against the selected funded listing. If liquidity changes while submitting,
-                                    the app will refresh and rematch automatically.
+                                    After signaling, send {amount || "--"} {selectedCurrency.code} via {selectedPaymentMethod}
+                                    to the seller, then submit proof to finalize release to your {selectedToken.sym} address.
                                 </p>
                             </div>
 
