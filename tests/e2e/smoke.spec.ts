@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 test("home page renders primary navigation", async ({ page }) => {
   await page.goto("/");
 
-  await expect(page.getByRole("heading", { name: "ZK P2P" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Anypay Legend" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Buy Crypto" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Sell Crypto" })).toBeVisible();
 });

@@ -3,7 +3,7 @@ import Navbar from "@/components/Navbar";
 import "./globals.css";
 
 export const metadata = {
-  title: "ZK P2P",
+  title: "Anypay Legend",
   description: "Privacy-preserving peer-to-peer crypto trading",
 };
 

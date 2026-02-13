@@ -67,7 +67,7 @@ export default function Navbar() {
                 <div className="flex items-center justify-between h-16">
                     <div className="flex items-center gap-8">
                         <Link href="/" className="text-xl font-bold text-white">
-                            ZK P2P
+                            Anypay Legend
                         </Link>
                         <div className="hidden md:flex items-center gap-6">
                             <Link href="/buy" className="text-gray-300 hover:text-white transition-colors">Buy</Link>
