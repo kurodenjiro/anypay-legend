@@ -5,6 +5,7 @@ import {
     getTlsnDemoProofStorageKey,
     normalizeMemo,
     TLSN_DEMO_PROOF_MESSAGE_TYPE,
+    type TlsnAttestationRecord,
     type TlsnDemoProofPayload,
 } from "@/lib/services/tlsn-demo";
 import {
@@ -45,6 +46,9 @@ function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const ATTESTATION_BACKEND_URL =
+    process.env.NEXT_PUBLIC_ATTESTATION_BACKEND_URL || "http://127.0.0.1:3101";
+
 export default function TLSNNotarization({
     mode,
     amount,
@@ -55,6 +59,7 @@ export default function TLSNNotarization({
     memo,
     fiatAmount,
     fiatCurrency,
+    sellerAccountId,
     onProof,
 }: TLSNNotarizationProps) {
     const [statusMessage, setStatusMessage] = useState("");
@@ -132,6 +137,21 @@ export default function TLSNNotarization({
             setProofError("Proof memo mismatch. Generate proof again with exact memo.");
             return;
         }
+        if (!proof.attestation || typeof proof.attestation !== "object") {
+            setProofError("Signed attestation is missing. Please run the plugin again.");
+            return;
+        }
+        if (!proof.attestation.checks?.policy_passed) {
+            setProofError("Attestation policy did not pass. Please retry verification.");
+            return;
+        }
+        if (
+            String(proof.attestation.intent_id || "").trim()
+            !== String(intentId || "").trim()
+        ) {
+            setProofError("Attestation intent mismatch. Please regenerate proof.");
+            return;
+        }
 
         processedProofIdsRef.current.add(proof.proofId);
         setReceivedProof(proof);
@@ -152,6 +172,39 @@ export default function TLSNNotarization({
             setIsSubmitting(false);
         }
     }, [intentId, normalizedMemo, onProof]);
+
+    const fetchAttestationForIntent = useCallback(async (activeIntentId: string) => {
+        const normalizedIntent = String(activeIntentId || "").trim();
+        if (!normalizedIntent) return null;
+
+        const endpoint = `${ATTESTATION_BACKEND_URL}/attestations/intent/${encodeURIComponent(normalizedIntent)}`;
+        for (let attempt = 0; attempt < 30; attempt += 1) {
+            try {
+                const response = await fetch(endpoint, { cache: "no-store" });
+                if (response.status === 404) {
+                    await sleep(500);
+                    continue;
+                }
+                if (!response.ok) {
+                    throw new Error(`Attestation backend returned ${response.status}`);
+                }
+                const payload = (await response.json()) as TlsnAttestationRecord;
+                return payload;
+            } catch (error: unknown) {
+                if (attempt >= 29) {
+                    appendCheckLog(
+                        `Attestation fetch failed: ${
+                            error instanceof Error ? error.message : "unknown error"
+                        }`,
+                    );
+                    return null;
+                }
+                await sleep(500);
+            }
+        }
+
+        return null;
+    }, [appendCheckLog]);
 
     const openDemoWindow = useCallback(async () => {
         setProofError("");
@@ -189,7 +242,20 @@ export default function TLSNNotarization({
             }
 
             const pluginCode = await response.text();
-            const rawResult = String((await tlsnWindow.tlsn.execCode(pluginCode)) || "");
+            const verificationInput = JSON.stringify({
+                intentId: String(intentId || "").trim(),
+                memo: normalizedMemo,
+                amount: String(fiatAmount || amount || "").trim(),
+                currency: String(fiatCurrency || currency || "").trim(),
+                platform: normalizedPlatform,
+                tagname: String(tagname || "").trim(),
+                seller: String(sellerAccountId || "").trim(),
+            });
+            const runtimeCode =
+                `globalThis.VERIFICATION_INPUT = ${JSON.stringify(verificationInput)};\n` +
+                pluginCode;
+
+            const rawResult = String((await tlsnWindow.tlsn.execCode(runtimeCode)) || "");
             appendCheckLog("Plugin executed.");
 
             if (rawResult) {
@@ -198,15 +264,41 @@ export default function TLSNNotarization({
                 );
             }
 
-            let parsedResult: { error?: unknown } | null = null;
+            let parsedResult: Record<string, unknown> | null = null;
             try {
-                parsedResult = JSON.parse(rawResult) as { error?: unknown };
+                parsedResult = JSON.parse(rawResult) as Record<string, unknown>;
             } catch {
                 parsedResult = null;
             }
 
             if (parsedResult?.error) {
                 throw new Error(String(parsedResult.error));
+            }
+
+            const verificationMeta =
+                parsedResult && typeof parsedResult.verification === "object"
+                    ? (parsedResult.verification as Record<string, unknown>)
+                    : null;
+
+            const verifierUrl =
+                verificationMeta && typeof verificationMeta.verifierUrl === "string"
+                    ? verificationMeta.verifierUrl
+                    : undefined;
+            const proxyUrl =
+                verificationMeta && typeof verificationMeta.proxyUrl === "string"
+                    ? verificationMeta.proxyUrl
+                    : undefined;
+
+            appendCheckLog("Waiting for backend attestation...");
+            const attestation = await fetchAttestationForIntent(String(intentId || ""));
+            if (attestation) {
+                appendCheckLog(
+                    `Attestation received (${attestation.attestation_id}) policy=${
+                        attestation.checks?.policy_passed ? "passed" : "failed"
+                    }`,
+                );
+            } else {
+                appendCheckLog("No backend attestation found yet; continuing with plugin payload.");
             }
 
             const generatedProof: TlsnDemoProofPayload = {
@@ -221,6 +313,11 @@ export default function TLSNNotarization({
                 pluginSource: pluginSourceUrl,
                 generatedAt: Date.now(),
                 memoMatched: true,
+                verifierUrl,
+                proxyUrl,
+                verifierResult: parsedResult || rawResult,
+                attestation: attestation || undefined,
+                attestationId: attestation?.attestation_id,
             };
 
             await submitProof(generatedProof);
@@ -242,6 +339,8 @@ export default function TLSNNotarization({
         normalizedPlatform,
         pluginSourceUrl,
         pluginState,
+        fetchAttestationForIntent,
+        sellerAccountId,
         submitProof,
         tagname,
     ]);

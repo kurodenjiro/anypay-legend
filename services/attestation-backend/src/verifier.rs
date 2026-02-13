@@ -1,12 +1,12 @@
 use crate::types::received_commitments;
 
 use super::types::ZKProofBundle;
+use crate::types::{MAX_RECV_DATA, MAX_SENT_DATA};
 use anyhow::Result;
 use chrono::{Local, NaiveDate};
 use futures::io::AsyncReadExt as _;
 use noir::barretenberg::verify::{get_ultra_honk_verification_key, verify_ultra_honk};
 use serde_json::Value;
-use tlsn_server_fixture_certs::CA_CERT_DER;
 use tlsn::{
     config::{tls_commit::TlsCommitProtocolConfig, verifier::VerifierConfig},
     connection::ServerName,
@@ -16,7 +16,7 @@ use tlsn::{
     webpki::{CertificateDer, RootCertStore},
     Session,
 };
-use crate::types::{MAX_RECV_DATA, MAX_SENT_DATA};
+use tlsn_server_fixture_certs::CA_CERT_DER;
 use tlsn_server_fixture_certs::SERVER_DOMAIN;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::compat::TokioAsyncReadCompatExt;

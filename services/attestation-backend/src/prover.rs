@@ -22,7 +22,6 @@ use spansy::{
     http::{BodyContent, Requests, Responses},
     json::JsonValue,
 };
-use tlsn_server_fixture_certs::{CA_CERT_DER, SERVER_DOMAIN};
 use tlsn::{
     config::{
         prove::{ProveConfig, ProveConfigBuilder},
@@ -41,9 +40,10 @@ use tlsn::{
     webpki::{CertificateDer, RootCertStore},
     Session,
 };
+use tlsn_server_fixture_certs::{CA_CERT_DER, SERVER_DOMAIN};
 
-use futures::io::AsyncWriteExt as _;
 use crate::types::{MAX_RECV_DATA, MAX_SENT_DATA};
+use futures::io::AsyncWriteExt as _;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 use tracing::instrument;

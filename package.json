@@ -8,7 +8,16 @@
     "start": "next start",
     "lint": "eslint",
     "test:e2e": "playwright test",
-    "test:e2e:headed": "playwright test --headed"
+    "test:e2e:headed": "playwright test --headed",
+    "contract:deploy:v2": "cd contracts/near && npm run deploy:v2",
+    "contract:migrate:v3": "cd contracts/near && npm run migrate:v3",
+    "contract:set:attestation-key": "cd contracts/near && npm run set:attestation-key",
+    "attestation:backend": "cd services/attestation-backend && cargo +nightly run",
+    "attestation:backend:release": "cd services/attestation-backend && cargo +nightly run --release",
+    "tlsn:verifier": "cd services/tlsn-extension/packages/verifier && cargo +nightly run",
+    "tlsn:verifier:release": "cd services/tlsn-extension/packages/verifier && cargo +nightly run --release",
+    "tlsn:verifier:health": "curl -sS http://127.0.0.1:7047/health && echo",
+    "tlsn:verifier:info": "curl -sS http://127.0.0.1:7047/info && echo"
   },
   "dependencies": {
     "@near-wallet-selector/core": "^10.1.4",

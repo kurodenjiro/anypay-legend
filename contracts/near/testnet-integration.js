@@ -3,7 +3,6 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { connect, keyStores, providers, KeyPair } = require("near-api-js");
 
 function parseEnvFile(filePath) {
     if (!fs.existsSync(filePath)) {
@@ -77,10 +76,10 @@ const TEST_ACCOUNT_ID = resolveEnv("TEST_ACCOUNT_ID", resolveEnv("OWNER_ID", res
 const TEST_PRIVATE_KEY = resolveEnv("TEST_PRIVATE_KEY", resolveEnv("OWNER_PRIVATE_KEY", resolveEnv("ORACLE_PRIVATE_KEY", "")));
 const RUN_WRITE_TESTS = resolveEnv("RUN_WRITE_TESTS") === "true";
 
-const GAS = "30000000000000";
+const GAS = 30_000_000_000_000n;
 // Keep payable-call deposits minimal for test sustainability.
-const STORAGE_DEPOSIT = "1"; // 1 yoctoNEAR
-const INTENT_DEPOSIT = "1"; // 1 yoctoNEAR
+const STORAGE_DEPOSIT = 1n; // 1 yoctoNEAR
+const INTENT_DEPOSIT = 1n; // 1 yoctoNEAR
 
 function assert(condition, message) {
     if (!condition) throw new Error(message);
@@ -214,6 +213,8 @@ async function findReusableV2Deposit(provider, accountId, assetId) {
 }
 
 async function main() {
+    const { Account, JsonRpcProvider, FailoverRpcProvider } = await import("near-api-js");
+
     console.log("=== NEAR Testnet Integration Test ===");
     console.log("Network:", NETWORK_ID);
     console.log("RPCs:", RPC_URLS.join(", "));
@@ -226,11 +227,11 @@ async function main() {
         );
     }
 
-    const rpcProviders = RPC_URLS.map((url) => new providers.JsonRpcProvider({ url }));
+    const rpcProviders = RPC_URLS.map((url) => new JsonRpcProvider({ url }));
     const provider =
         rpcProviders.length === 1
             ? rpcProviders[0]
-            : new providers.FailoverRpcProvider(rpcProviders);
+            : new FailoverRpcProvider(rpcProviders);
 
     // 1) Connectivity + contract availability
     const ownerId = await viewCall(provider, "get_owner");
@@ -259,36 +260,18 @@ async function main() {
     assert(TEST_ACCOUNT_ID, "TEST_ACCOUNT_ID (or OWNER_ID) is required when RUN_WRITE_TESTS=true");
 
     // 2) Writable flow against deployed contract
-    const keyStore = TEST_PRIVATE_KEY
-        ? new keyStores.InMemoryKeyStore()
-        : new keyStores.UnencryptedFileSystemKeyStore(
-              path.join(os.homedir(), ".near-credentials"),
-          );
-
-    if (TEST_PRIVATE_KEY) {
-        const keyPair = KeyPair.fromString(TEST_PRIVATE_KEY);
-        await keyStore.setKey(NETWORK_ID, TEST_ACCOUNT_ID, keyPair);
-    }
-
-    const near = await connect({
-        networkId: NETWORK_ID,
-        keyStore,
-        nodeUrl: RPC_URLS[0],
-        walletUrl: `https://wallet.${NETWORK_ID}.near.org`,
-        helperUrl: `https://helper.${NETWORK_ID}.near.org`,
-    });
-
-    const account = await near.account(TEST_ACCOUNT_ID);
-    await account.state();
+    assert(TEST_PRIVATE_KEY, "TEST_PRIVATE_KEY is required when RUN_WRITE_TESTS=true");
+    const account = new Account(TEST_ACCOUNT_ID, provider, TEST_PRIVATE_KEY);
+    await account.getState();
     console.log("✓ signer account loaded:", TEST_ACCOUNT_ID);
 
     const amount = "100000000000000000000000"; // 0.1 (24 decimals)
     const minAmount = "10000000000000000000000"; // 0.01
-    const paymentMethod = `automation-${Date.now()}`;
+    const paymentMethod = `wise::automation-${Date.now()}`;
     const v2AssetId = "asset:btc:testnet";
 
     console.log("→ create_deposit...");
-    const createOutcome = await account.functionCall({
+    const createOutcome = await account.callFunction({
         contractId: CONTRACT_ID,
         methodName: "create_deposit",
         args: {
@@ -300,10 +283,16 @@ async function main() {
             delegate: null,
         },
         gas: GAS,
-        attachedDeposit: STORAGE_DEPOSIT,
+        deposit: STORAGE_DEPOSIT,
     });
 
-    let depositId = decodeSuccessValue(createOutcome.status);
+    let depositId =
+        typeof createOutcome === "number"
+            ? createOutcome
+            : decodeSuccessValue(createOutcome?.status);
+    if (typeof depositId === "string" && /^\d+$/.test(depositId)) {
+        depositId = Number(depositId);
+    }
     if (typeof depositId !== "number") {
         const accountDeposits = await viewCall(provider, "get_account_deposits", {
             account_id: TEST_ACCOUNT_ID,
@@ -316,7 +305,7 @@ async function main() {
     console.log("✓ create_deposit deposit_id:", depositId);
 
     console.log("→ signal_intent...");
-    const signalOutcome = await account.functionCall({
+    const signalOutcome = await account.callFunction({
         contractId: CONTRACT_ID,
         methodName: "signal_intent",
         args: {
@@ -328,10 +317,13 @@ async function main() {
             chain: "BTC",
         },
         gas: GAS,
-        attachedDeposit: INTENT_DEPOSIT,
+        deposit: INTENT_DEPOSIT,
     });
 
-    let intentHash = decodeSuccessValue(signalOutcome.status);
+    let intentHash =
+        typeof signalOutcome === "string"
+            ? signalOutcome
+            : decodeSuccessValue(signalOutcome?.status);
     if (typeof intentHash !== "string") {
         const depositIntents = await viewCall(provider, "get_deposit_intents", { deposit_id: depositId });
         assert(Array.isArray(depositIntents) && depositIntents.length > 0, "Could not resolve created intent hash");
@@ -345,7 +337,7 @@ async function main() {
     console.log("✓ get_intent status after signal:", signaledIntent.status);
 
     console.log("→ cancel_intent...");
-    await account.functionCall({
+    await account.callFunction({
         contractId: CONTRACT_ID,
         methodName: "cancel_intent",
         args: { intent_hash: intentHash },
@@ -365,7 +357,7 @@ async function main() {
         console.log("→ register_deposit_intent_v2...");
         let registerOutcome;
         try {
-            registerOutcome = await account.functionCall({
+            registerOutcome = await account.callFunction({
                 contractId: CONTRACT_ID,
                 methodName: "register_deposit_intent_v2",
                 args: {
@@ -378,7 +370,7 @@ async function main() {
                     refund_to: "tb1qautomationrefundxxxxxxxxxxxxxxxxxxxxx",
                 },
                 gas: GAS,
-                attachedDeposit: v2StorageFeeYocto,
+                deposit: BigInt(v2StorageFeeYocto),
             });
         } catch (error) {
             if (
@@ -393,7 +385,13 @@ async function main() {
             throw error;
         }
 
-        v2DepositId = decodeSuccessValue(registerOutcome.status);
+        v2DepositId =
+            typeof registerOutcome === "number"
+                ? registerOutcome
+                : decodeSuccessValue(registerOutcome?.status);
+        if (typeof v2DepositId === "string" && /^\d+$/.test(v2DepositId)) {
+            v2DepositId = Number(v2DepositId);
+        }
         if (typeof v2DepositId !== "number") {
             const accountDeposits = await viewCall(provider, "get_account_deposits", {
                 account_id: TEST_ACCOUNT_ID,
@@ -406,7 +404,7 @@ async function main() {
     }
 
     console.log("→ oracle_set_quote_v2...");
-    await account.functionCall({
+    await account.callFunction({
         contractId: CONTRACT_ID,
         methodName: "oracle_set_quote_v2",
         args: {

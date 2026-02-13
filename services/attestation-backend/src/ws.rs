@@ -1,9 +1,9 @@
-use std::io::{Result, Error, ErrorKind};
+use axum::extract::ws::{Message, WebSocket};
+use bytes::{Buf, Bytes};
+use futures::{SinkExt, StreamExt};
+use std::io::{Error, ErrorKind, Result};
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use axum::extract::ws::{Message, WebSocket};
-use bytes::{Bytes, Buf};
-use futures::{StreamExt, SinkExt};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 pub struct WsStream {
@@ -68,16 +68,16 @@ impl AsyncWrite for WsStream {
         // We can't easily partially write a message in WS, so we assume the buf is a full frame or we send it as one.
         // For streams, this might be inefficient if buf is huge, or wrong if protocol expects fragmentation.
         // TLSN usually sends frames that fit in memory.
-        
+
         let msg = Message::Binary(buf.to_vec());
         match self.ws.poll_ready_unpin(cx) {
             Poll::Ready(Ok(())) => {
                 match self.ws.start_send_unpin(msg) {
                     Ok(()) => {
-                        // We must return expected number of bytes written. 
+                        // We must return expected number of bytes written.
                         // Since we queued the whole buffer, we say we wrote it all.
                         Poll::Ready(Ok(buf.len()))
-                    },
+                    }
                     Err(e) => Poll::Ready(Err(Error::new(ErrorKind::Other, e.to_string()))),
                 }
             }

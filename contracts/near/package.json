@@ -12,7 +12,9 @@
     "test:testnet:write": "RUN_WRITE_TESTS=true node testnet-integration.js",
     "relayer:start": "node --experimental-strip-types --experimental-specifier-resolution=node relayer/index.ts",
     "migrate:v2": "node migrate-v2.js",
-    "deploy:v2": "node deploy-v2.js"
+    "migrate:v3": "node migrate-v3.js",
+    "deploy:v2": "node deploy-v2.js",
+    "set:attestation-key": "node set-attestation-key.js"
   },
   "keywords": [],
   "author": "",

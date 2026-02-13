@@ -16,6 +16,7 @@ const DEFAULT_V2_STORAGE_FEE_YOCTO: u128 = 50_000_000_000_000_000_000_000; // 0.
 const DEFAULT_TOPUP_WINDOW_MS: u64 = 10_800_000; // 3 hours
 const DEFAULT_MAX_QUOTE_ROTATIONS: u16 = 48;
 const MAX_VIEW_LIMIT: usize = 200;
+const ATTESTATION_VERSION: &str = "anypay/tlsn-attestation/v1";
 
 #[near_bindgen]
 #[derive(BorshDeserialize, BorshSerialize, PanicOnDefault)]
@@ -58,6 +59,11 @@ pub struct Contract {
     pub v2_storage_fee_yocto: u128,
     pub topup_window_ms: u64,
     pub max_quote_rotations: u16,
+
+    // === ATTESTATION STATE ===
+    pub used_attestation_sessions: LookupMap<String, bool>,
+    pub intent_attestations: LookupMap<String, String>,
+    pub attestation_public_key_hex: String,
 }
 
 #[derive(BorshDeserialize, BorshSerialize)]
@@ -75,6 +81,29 @@ pub struct OldContract {
     pub protocol_fee_recipient: AccountId,
     pub max_intents_per_deposit: u8,
     pub intent_expiration_period: u64,
+}
+
+#[derive(BorshDeserialize, BorshSerialize)]
+pub struct V2Contract {
+    pub owner_id: AccountId,
+    pub deposit_counter: u64,
+    pub deposits: LookupMap<u64, Deposit>,
+    pub account_deposits: LookupMap<AccountId, UnorderedSet<u64>>,
+    pub deposit_intents: LookupMap<u64, UnorderedSet<String>>,
+    pub intent_counter: u64,
+    pub intents: LookupMap<String, Intent>,
+    pub account_intents: LookupMap<AccountId, UnorderedSet<String>>,
+    pub payment_methods: LookupMap<String, PaymentMethod>,
+    pub protocol_fee: u128,
+    pub protocol_fee_recipient: AccountId,
+    pub max_intents_per_deposit: u8,
+    pub intent_expiration_period: u64,
+    pub deposit_funding: LookupMap<u64, DepositFundingMeta>,
+    pub open_deposits_by_asset: LookupMap<String, UnorderedSet<u64>>,
+    pub oracle_account_id: AccountId,
+    pub v2_storage_fee_yocto: u128,
+    pub topup_window_ms: u64,
+    pub max_quote_rotations: u16,
 }
 
 // === STRUCTS ===
@@ -222,6 +251,49 @@ pub struct V2Config {
     pub max_quote_rotations: u16,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[cfg_attr(feature = "abi", derive(JsonSchema))]
+#[serde(crate = "near_sdk::serde")]
+pub struct AttestationChecksPayload {
+    pub recv_body_revealed: bool,
+    pub memo_match: Option<bool>,
+    pub amount_match: Option<bool>,
+    pub currency_match: Option<bool>,
+    pub platform_match: Option<bool>,
+    pub tagname_match: Option<bool>,
+    pub policy_passed: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[cfg_attr(feature = "abi", derive(JsonSchema))]
+#[serde(crate = "near_sdk::serde")]
+pub struct AttestationSignaturePayload {
+    pub algorithm: String,
+    pub public_key_hex: String,
+    pub signature_hex: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[cfg_attr(feature = "abi", derive(JsonSchema))]
+#[serde(crate = "near_sdk::serde")]
+pub struct AttestationPayload {
+    pub attestation_id: String,
+    pub version: String,
+    pub session_id: String,
+    pub intent_id: Option<String>,
+    pub server_name: String,
+    pub expected_memo: Option<String>,
+    pub expected_amount: Option<String>,
+    pub expected_currency: Option<String>,
+    pub expected_platform: Option<String>,
+    pub expected_tagname: Option<String>,
+    pub transcript_digest_sha256: String,
+    pub issued_at_ms: u64,
+    pub expires_at_ms: u64,
+    pub checks: AttestationChecksPayload,
+    pub signature: AttestationSignaturePayload,
+}
+
 // === IMPLEMENTATION ===
 
 #[near_bindgen]
@@ -248,6 +320,9 @@ impl Contract {
             v2_storage_fee_yocto: DEFAULT_V2_STORAGE_FEE_YOCTO,
             topup_window_ms: DEFAULT_TOPUP_WINDOW_MS,
             max_quote_rotations: DEFAULT_MAX_QUOTE_ROTATIONS,
+            used_attestation_sessions: LookupMap::new(b"s"),
+            intent_attestations: LookupMap::new(b"t"),
+            attestation_public_key_hex: String::new(),
         }
     }
 
@@ -284,7 +359,108 @@ impl Contract {
                 topup_window_ms
             },
             max_quote_rotations: DEFAULT_MAX_QUOTE_ROTATIONS,
+            used_attestation_sessions: LookupMap::new(b"s"),
+            intent_attestations: LookupMap::new(b"t"),
+            attestation_public_key_hex: String::new(),
         }
+    }
+
+    #[init(ignore_state)]
+    pub fn migrate_v3(
+        oracle_account_id: Option<AccountId>,
+        storage_fee_yocto: Option<U128>,
+        topup_window_ms: Option<u64>,
+        attestation_public_key_hex: Option<String>,
+    ) -> Self {
+        let state_bytes = env::storage_read(b"STATE").expect("Old state does not exist");
+        let caller = env::predecessor_account_id();
+        let configured_storage_fee = storage_fee_yocto.map(|value| value.0);
+        if let Some(window_ms) = topup_window_ms {
+            assert!(window_ms > 0, "topup_window_ms must be > 0");
+        }
+        let configured_attestation_key =
+            attestation_public_key_hex.map(Self::normalize_attestation_public_key_hex);
+
+        if let Ok(mut current) = Contract::try_from_slice(&state_bytes) {
+            assert_eq!(caller, current.owner_id, "Owner only");
+
+            if let Some(next_oracle) = oracle_account_id {
+                current.oracle_account_id = next_oracle;
+            }
+            if let Some(next_storage_fee) = configured_storage_fee {
+                current.v2_storage_fee_yocto = next_storage_fee;
+            }
+            if let Some(next_topup_window_ms) = topup_window_ms {
+                current.topup_window_ms = next_topup_window_ms;
+            }
+            if let Some(next_attestation_key) = configured_attestation_key {
+                current.attestation_public_key_hex = next_attestation_key;
+            }
+
+            return current;
+        }
+
+        if let Ok(previous) = V2Contract::try_from_slice(&state_bytes) {
+            assert_eq!(caller, previous.owner_id, "Owner only");
+
+            return Self {
+                owner_id: previous.owner_id.clone(),
+                deposit_counter: previous.deposit_counter,
+                deposits: previous.deposits,
+                account_deposits: previous.account_deposits,
+                deposit_intents: previous.deposit_intents,
+                intent_counter: previous.intent_counter,
+                intents: previous.intents,
+                account_intents: previous.account_intents,
+                payment_methods: previous.payment_methods,
+                protocol_fee: previous.protocol_fee,
+                protocol_fee_recipient: previous.protocol_fee_recipient,
+                max_intents_per_deposit: previous.max_intents_per_deposit,
+                intent_expiration_period: previous.intent_expiration_period,
+                deposit_funding: previous.deposit_funding,
+                open_deposits_by_asset: previous.open_deposits_by_asset,
+                oracle_account_id: oracle_account_id.unwrap_or(previous.oracle_account_id),
+                v2_storage_fee_yocto: configured_storage_fee
+                    .unwrap_or(previous.v2_storage_fee_yocto),
+                topup_window_ms: topup_window_ms.unwrap_or(previous.topup_window_ms),
+                max_quote_rotations: previous.max_quote_rotations,
+                used_attestation_sessions: LookupMap::new(b"s"),
+                intent_attestations: LookupMap::new(b"t"),
+                attestation_public_key_hex: configured_attestation_key.unwrap_or_default(),
+            };
+        }
+
+        if let Ok(previous) = OldContract::try_from_slice(&state_bytes) {
+            assert_eq!(caller, previous.owner_id, "Owner only");
+
+            return Self {
+                owner_id: previous.owner_id.clone(),
+                deposit_counter: previous.deposit_counter,
+                deposits: previous.deposits,
+                account_deposits: previous.account_deposits,
+                deposit_intents: previous.deposit_intents,
+                intent_counter: previous.intent_counter,
+                intents: previous.intents,
+                account_intents: previous.account_intents,
+                payment_methods: previous.payment_methods,
+                protocol_fee: previous.protocol_fee,
+                protocol_fee_recipient: previous.protocol_fee_recipient,
+                max_intents_per_deposit: previous.max_intents_per_deposit,
+                intent_expiration_period: previous.intent_expiration_period,
+                deposit_funding: LookupMap::new(b"f"),
+                open_deposits_by_asset: LookupMap::new(b"o"),
+                oracle_account_id: oracle_account_id.unwrap_or(previous.owner_id),
+                v2_storage_fee_yocto: configured_storage_fee
+                    .unwrap_or(DEFAULT_V2_STORAGE_FEE_YOCTO),
+                topup_window_ms: topup_window_ms.unwrap_or(DEFAULT_TOPUP_WINDOW_MS),
+                max_quote_rotations: DEFAULT_MAX_QUOTE_ROTATIONS,
+                used_attestation_sessions: LookupMap::new(b"s"),
+                intent_attestations: LookupMap::new(b"t"),
+                attestation_public_key_hex: configured_attestation_key.unwrap_or_default(),
+            };
+        }
+
+        env::panic_str("Unsupported contract state for migrate_v3");
     }
 
     // === ESCROW FUNCTIONS (V1) ===
@@ -865,6 +1041,169 @@ impl Contract {
         self.fulfill_intent(intent_hash)
     }
 
+    pub fn fulfill_intent_with_attestation(
+        &mut self,
+        intent_hash: String,
+        attestation: String,
+    ) -> Promise {
+        let normalized_attestation = attestation.trim();
+        assert!(
+            !normalized_attestation.is_empty(),
+            "attestation is required"
+        );
+        assert!(
+            normalized_attestation.len() <= 16_384,
+            "attestation payload is too large"
+        );
+        assert!(
+            !self.attestation_public_key_hex.is_empty(),
+            "attestation public key is not configured"
+        );
+
+        let payload: AttestationPayload = near_sdk::serde_json::from_str(normalized_attestation)
+            .unwrap_or_else(|_| env::panic_str("invalid attestation payload JSON"));
+
+        let intent = self.intents.get(&intent_hash).expect("Intent not found");
+        assert!(
+            intent.status == IntentStatus::Signaled,
+            "Intent not in signaled state"
+        );
+
+        let session_id = payload.session_id.trim().to_string();
+        assert!(!session_id.is_empty(), "attestation session_id is required");
+        assert!(
+            self.used_attestation_sessions.get(&session_id).is_none(),
+            "attestation session already used"
+        );
+        assert_eq!(
+            payload.version.trim(),
+            ATTESTATION_VERSION,
+            "unsupported attestation version"
+        );
+        assert!(
+            payload.checks.policy_passed,
+            "attestation policy check failed"
+        );
+        assert!(
+            payload.expires_at_ms >= self.now_ms(),
+            "attestation has expired"
+        );
+
+        let payload_intent_id = payload
+            .intent_id
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        assert!(
+            !payload_intent_id.is_empty(),
+            "attestation intent_id is required"
+        );
+        assert_eq!(
+            payload_intent_id, intent_hash,
+            "attestation intent mismatch"
+        );
+
+        let expected_memo =
+            Self::build_intent_transfer_memo(&intent.intent_hash, intent.deposit_id);
+        assert_eq!(
+            payload.expected_memo.as_deref().unwrap_or("").trim(),
+            expected_memo,
+            "attestation memo mismatch"
+        );
+
+        let expected_amount = payload.expected_amount.as_deref().unwrap_or("").trim();
+        assert!(
+            !expected_amount.is_empty(),
+            "attestation expected_amount is required"
+        );
+        assert!(
+            payload.checks.amount_match.unwrap_or(false),
+            "attestation amount check failed"
+        );
+
+        assert_eq!(
+            payload
+                .expected_currency
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .to_uppercase(),
+            intent.currency_code.trim().to_uppercase(),
+            "attestation currency mismatch"
+        );
+        assert!(
+            payload.checks.currency_match.unwrap_or(false),
+            "attestation currency check failed"
+        );
+
+        let (expected_platform, expected_tagname) =
+            Self::parse_payment_method(&intent.payment_method);
+        assert_eq!(
+            payload
+                .expected_platform
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .to_lowercase(),
+            expected_platform,
+            "attestation platform mismatch"
+        );
+        assert!(
+            payload.checks.platform_match.unwrap_or(false),
+            "attestation platform check failed"
+        );
+        assert_eq!(
+            payload.expected_tagname.as_deref().unwrap_or("").trim(),
+            expected_tagname,
+            "attestation tagname mismatch"
+        );
+        assert!(
+            payload.checks.tagname_match.unwrap_or(false),
+            "attestation tagname check failed"
+        );
+        assert!(
+            payload.checks.memo_match.unwrap_or(false),
+            "attestation memo check failed"
+        );
+        assert!(
+            payload.checks.recv_body_revealed,
+            "attestation transcript body was not revealed"
+        );
+
+        assert_eq!(
+            payload.signature.algorithm.trim().to_lowercase(),
+            "ed25519",
+            "unsupported attestation signature algorithm"
+        );
+        assert_eq!(
+            payload.signature.public_key_hex.trim().to_lowercase(),
+            self.attestation_public_key_hex.trim().to_lowercase(),
+            "attestation signer is not trusted"
+        );
+
+        let signature = Self::decode_hex_fixed::<64>(&payload.signature.signature_hex)
+            .unwrap_or_else(|| env::panic_str("invalid attestation signature hex"));
+        let public_key = Self::decode_hex_fixed::<32>(&payload.signature.public_key_hex)
+            .unwrap_or_else(|| env::panic_str("invalid attestation public key hex"));
+        let canonical_message = Self::build_attestation_canonical_message(&payload);
+        assert!(
+            env::ed25519_verify(&signature, canonical_message.as_bytes(), &public_key),
+            "attestation signature verification failed"
+        );
+
+        self.used_attestation_sessions.insert(&session_id, &true);
+        self.intent_attestations
+            .insert(&intent_hash, &normalized_attestation.to_string());
+
+        env::log_str(&format!(
+            "Intent attestation verified: {} session {}",
+            intent_hash, session_id
+        ));
+
+        self.fulfill_intent(intent_hash)
+    }
+
     pub fn release_intent(&mut self, intent_hash: String) -> Promise {
         let caller = env::predecessor_account_id();
         let mut intent = self.intents.get(&intent_hash).expect("Intent not found");
@@ -935,7 +1274,10 @@ impl Contract {
         self.intents.get(&intent_hash)
     }
 
-    pub fn get_intent_transfer_details(&self, intent_hash: String) -> Option<IntentTransferDetailsView> {
+    pub fn get_intent_transfer_details(
+        &self,
+        intent_hash: String,
+    ) -> Option<IntentTransferDetailsView> {
         let intent = self.intents.get(&intent_hash)?;
         let (platform, tagname) = Self::parse_payment_method(&intent.payment_method);
         Some(IntentTransferDetailsView {
@@ -1025,6 +1367,14 @@ impl Contract {
         }
     }
 
+    pub fn get_attestation_public_key_hex(&self) -> String {
+        self.attestation_public_key_hex.clone()
+    }
+
+    pub fn get_intent_attestation(&self, intent_hash: String) -> Option<String> {
+        self.intent_attestations.get(&intent_hash)
+    }
+
     // === ADMIN FUNCTIONS ===
 
     pub fn set_protocol_fee(&mut self, fee: u128) {
@@ -1058,6 +1408,12 @@ impl Contract {
         self.assert_owner();
         assert!(max_quote_rotations > 0, "max_quote_rotations must be > 0");
         self.max_quote_rotations = max_quote_rotations;
+    }
+
+    pub fn set_attestation_public_key_hex(&mut self, public_key_hex: String) {
+        self.assert_owner();
+        self.attestation_public_key_hex =
+            Self::normalize_attestation_public_key_hex(public_key_hex);
     }
 
     // === INTERNAL FUNCTIONS ===
@@ -1194,5 +1550,71 @@ impl Contract {
     fn build_intent_transfer_memo(intent_hash: &str, deposit_id: u64) -> String {
         let suffix = intent_hash.strip_prefix("intent:").unwrap_or(intent_hash);
         format!("anypay:{}:{}", deposit_id, suffix)
+    }
+
+    fn build_attestation_canonical_message(payload: &AttestationPayload) -> String {
+        let intent_id = payload.intent_id.as_deref().unwrap_or("");
+        let expected_memo = payload.expected_memo.as_deref().unwrap_or("");
+        let expected_amount = payload.expected_amount.as_deref().unwrap_or("");
+        let expected_currency = payload.expected_currency.as_deref().unwrap_or("");
+        let expected_platform = payload.expected_platform.as_deref().unwrap_or("");
+        let expected_tagname = payload.expected_tagname.as_deref().unwrap_or("");
+
+        format!(
+            "version={}\nsession_id={}\nintent_id={}\nserver_name={}\nexpected_memo={}\nexpected_amount={}\nexpected_currency={}\nexpected_platform={}\nexpected_tagname={}\ntranscript_digest_sha256={}\nissued_at_ms={}\nexpires_at_ms={}\npolicy_passed={}\n",
+            ATTESTATION_VERSION,
+            Self::sanitize_attestation_value(&payload.session_id),
+            Self::sanitize_attestation_value(intent_id),
+            Self::sanitize_attestation_value(&payload.server_name),
+            Self::sanitize_attestation_value(expected_memo),
+            Self::sanitize_attestation_value(expected_amount),
+            Self::sanitize_attestation_value(expected_currency),
+            Self::sanitize_attestation_value(expected_platform),
+            Self::sanitize_attestation_value(expected_tagname),
+            Self::sanitize_attestation_value(&payload.transcript_digest_sha256),
+            payload.issued_at_ms,
+            payload.expires_at_ms,
+            payload.checks.policy_passed,
+        )
+    }
+
+    fn sanitize_attestation_value(value: &str) -> String {
+        value.replace('\n', " ").trim().to_string()
+    }
+
+    fn normalize_attestation_public_key_hex(value: String) -> String {
+        let normalized = value.trim().to_lowercase();
+        assert!(
+            Self::decode_hex_fixed::<32>(&normalized).is_some(),
+            "public_key_hex must be 32-byte hex"
+        );
+        normalized
+    }
+
+    fn decode_hex_fixed<const N: usize>(value: &str) -> Option<[u8; N]> {
+        let trimmed = value.trim();
+        if trimmed.len() != N * 2 {
+            return None;
+        }
+
+        let bytes = trimmed.as_bytes();
+        let mut out = [0u8; N];
+        let mut index = 0usize;
+        while index < N {
+            let high = Self::decode_hex_nibble(bytes[index * 2])?;
+            let low = Self::decode_hex_nibble(bytes[index * 2 + 1])?;
+            out[index] = (high << 4) | low;
+            index += 1;
+        }
+        Some(out)
+    }
+
+    fn decode_hex_nibble(ch: u8) -> Option<u8> {
+        match ch {
+            b'0'..=b'9' => Some(ch - b'0'),
+            b'a'..=b'f' => Some(ch - b'a' + 10),
+            b'A'..=b'F' => Some(ch - b'A' + 10),
+            _ => None,
+        }
     }
 }

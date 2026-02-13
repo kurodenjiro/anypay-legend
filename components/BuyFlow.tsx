@@ -873,11 +873,24 @@ export default function BuyFlow({ initialIntentId = "" }: BuyFlowProps) {
             return;
         }
 
+        const attestation = proof?.attestation;
+        if (!attestation || typeof attestation !== "object") {
+            setError("Proof submission failed: signed attestation is missing.");
+            return;
+        }
+        if (!attestation?.checks?.policy_passed) {
+            setError("Proof submission failed: attestation policy did not pass.");
+            return;
+        }
+
         setError("");
         setTradeData((prev: any) => ({ ...prev, proof, proofSubmitStatus: "SUBMITTING" }));
 
         try {
-            const fulfillResult = await nearService.fulfillIntentWithProof(activeIntentId, proof);
+            const fulfillResult = await nearService.fulfillIntentWithAttestation(
+                activeIntentId,
+                attestation,
+            );
             const proofTxHash = getTxHash(fulfillResult);
             const latestIntent = await nearService.getIntent(activeIntentId).catch(() => null);
 

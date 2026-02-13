@@ -692,6 +692,38 @@ export class NearService {
     }
 
     /**
+     * Fulfill intent using a signed TLSN attestation payload.
+     */
+    async fulfillIntentWithAttestation(intentHash: string, attestation: unknown) {
+        if (!this.wallet || !this.accountId) throw new Error("Not signed in");
+        if (typeof this.wallet.signAndSendTransaction !== 'function') {
+            throw new Error(`Wallet type not supported for NEAR transactions.`);
+        }
+
+        const serializedAttestation = JSON.stringify(attestation ?? {});
+        if (!serializedAttestation || serializedAttestation === "{}") {
+            throw new Error("Attestation payload is empty");
+        }
+
+        return await this.wallet.signAndSendTransaction({
+            signerId: this.accountId,
+            receiverId: CONTRACT_ID,
+            actions: [{
+                type: "FunctionCall",
+                params: {
+                    methodName: "fulfill_intent_with_attestation",
+                    args: {
+                        intent_hash: intentHash,
+                        attestation: serializedAttestation,
+                    },
+                    gas: "70000000000000",
+                    deposit: "0"
+                }
+            }]
+        });
+    }
+
+    /**
      * Release intent (depositor manually releases funds)
      */
     async releaseIntent(intentHash: string) {
@@ -762,6 +794,27 @@ export class NearService {
         });
     }
 
+    async setAttestationPublicKeyHex(publicKeyHex: string) {
+        if (!this.wallet || !this.accountId) throw new Error("Not signed in");
+        if (typeof this.wallet.signAndSendTransaction !== "function") {
+            throw new Error("Wallet type not supported for NEAR transactions.");
+        }
+
+        return await this.wallet.signAndSendTransaction({
+            signerId: this.accountId,
+            receiverId: CONTRACT_ID,
+            actions: [{
+                type: "FunctionCall",
+                params: {
+                    methodName: "set_attestation_public_key_hex",
+                    args: { public_key_hex: String(publicKeyHex || "").trim() },
+                    gas: "30000000000000",
+                    deposit: "0",
+                },
+            }],
+        });
+    }
+
     // === VIEW FUNCTIONS ===
 
     /**
@@ -815,6 +868,14 @@ export class NearService {
 
     async getV2Config() {
         return await this.view('get_v2_config');
+    }
+
+    async getAttestationPublicKeyHex(): Promise<string> {
+        return await this.view<string>('get_attestation_public_key_hex');
+    }
+
+    async getIntentAttestation(intentHash: string): Promise<string | null> {
+        return await this.view<string | null>('get_intent_attestation', { intent_hash: intentHash });
     }
 
     async getAccountDeposits(accountId?: string): Promise<DepositRecord[]> {

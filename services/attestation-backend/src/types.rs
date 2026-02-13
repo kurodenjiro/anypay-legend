@@ -1,8 +1,5 @@
-use tlsn::{
-    transcript::hash::PlaintextHash,
-    transcript::TranscriptCommitment,
-};
 use serde::{Deserialize, Serialize};
+use tlsn::{transcript::hash::PlaintextHash, transcript::TranscriptCommitment};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ZKProofBundle {
@@ -17,9 +14,7 @@ pub const MAX_SENT_DATA: usize = 1 << 12;
 pub const MAX_RECV_DATA: usize = 1 << 14;
 // End constants
 
-pub fn received_commitments(
-    commitments: &[TranscriptCommitment],
-) -> Vec<&PlaintextHash> {
+pub fn received_commitments(commitments: &[TranscriptCommitment]) -> Vec<&PlaintextHash> {
     commitments
         .iter()
         .filter_map(|commitment| match commitment {
