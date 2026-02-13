@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { formatUnits } from "viem";
+import { formatUnits, parseUnits } from "viem";
 import { nearService, type DepositSummaryV2 } from "@/lib/services/near";
 import {
     resolveIntentsAssetId,
@@ -37,13 +37,24 @@ function formatBalance(nearAmount: string | null): string {
     return `${value.toFixed(4)} NEAR`;
 }
 
-function formatAmount(amount: string): string {
+function getAssetDecimals(symbol: string): number {
+    const normalized = String(symbol || "").trim().toUpperCase();
+    if (normalized === "BTC" || normalized === "ZEC") return 8;
+    if (normalized === "ETH") return 18;
+    return 24;
+}
+
+function formatAmount(amount: string, symbol: string): string {
     try {
         const parsed = BigInt(amount || "0");
-        const decimal = Number(formatUnits(parsed, 24));
-        if (!Number.isFinite(decimal)) return amount;
-        if (decimal >= 1) return decimal.toFixed(4);
-        return decimal.toFixed(6);
+        const decimals = getAssetDecimals(symbol);
+        const normalized = formatUnits(parsed, decimals);
+        if (!normalized.includes(".")) return normalized;
+
+        const [whole, fraction = ""] = normalized.split(".");
+        const precision = decimals <= 8 ? 8 : 6;
+        const clipped = fraction.slice(0, precision).replace(/0+$/, "");
+        return clipped.length > 0 ? `${whole}.${clipped}` : whole;
     } catch {
         return amount;
     }
@@ -89,6 +100,17 @@ function toSignalAmount(value: number, symbol: string): string {
             ? 12
             : 8;
     return trimTrailingZeros(value.toFixed(precision));
+}
+
+function parseAtomicAmount(value: string, decimals: number): bigint | null {
+    const normalized = String(value || "").trim();
+    if (!normalized) return null;
+
+    try {
+        return parseUnits(normalized, decimals);
+    } catch {
+        return null;
+    }
 }
 
 export default function BuyWidget({
@@ -141,6 +163,10 @@ export default function BuyWidget({
     const selectedPaymentMethod = selectedListingPaymentInfo.method;
     const selectedPaymentMethodRaw = selectedListingPaymentInfo.raw || selectedPaymentMethod;
     const selectedSellerAccountTag = selectedListingPaymentInfo.accountTag;
+    const selectedTokenDecimals = useMemo(
+        () => getAssetDecimals(selectedToken.sym),
+        [selectedToken.sym],
+    );
     const numericFiatAmount = Number(amount);
     const estimatedCryptoAmount = useMemo(() => {
         if (!Number.isFinite(numericFiatAmount) || numericFiatAmount <= 0 || !assetUsdPrice) {
@@ -152,9 +178,49 @@ export default function BuyWidget({
         () => toSignalAmount(estimatedCryptoAmount ?? 0, selectedToken.sym),
         [estimatedCryptoAmount, selectedToken.sym],
     );
+    const signalAmountAtomic = useMemo(
+        () => parseAtomicAmount(signalAmount, selectedTokenDecimals),
+        [signalAmount, selectedTokenDecimals],
+    );
     const hasValidRecipientAddress = useMemo(
         () => isValidRefundAddress(selectedToken.sym, recipientAddress),
         [selectedToken.sym, recipientAddress],
+    );
+    const selectedListingAmountBounds = useMemo(() => {
+        if (!selectedListing) return null;
+        try {
+            return {
+                min: BigInt(String(selectedListing.min_intent_amount || "0")),
+                max: BigInt(String(selectedListing.max_intent_amount || "0")),
+                remaining: BigInt(String(selectedListing.remaining_deposits || "0")),
+            };
+        } catch {
+            return null;
+        }
+    }, [selectedListing]);
+    const listingAmountValidationError = useMemo(() => {
+        if (!selectedListing || !signalAmountAtomic) return "";
+        if (!selectedListingAmountBounds) {
+            return "Selected listing bounds are unavailable. Refresh listings and try again.";
+        }
+
+        if (signalAmountAtomic < selectedListingAmountBounds.min) {
+            return `Amount is below this listing minimum (${formatAmount(String(selectedListingAmountBounds.min), selectedToken.sym)} ${selectedToken.sym}).`;
+        }
+        if (signalAmountAtomic > selectedListingAmountBounds.max) {
+            return `Amount exceeds this listing maximum (${formatAmount(String(selectedListingAmountBounds.max), selectedToken.sym)} ${selectedToken.sym}).`;
+        }
+        if (signalAmountAtomic > selectedListingAmountBounds.remaining) {
+            return `Amount exceeds current available liquidity (${formatAmount(String(selectedListingAmountBounds.remaining), selectedToken.sym)} ${selectedToken.sym}).`;
+        }
+        return "";
+    }, [selectedListing, signalAmountAtomic, selectedListingAmountBounds, selectedToken.sym]);
+    const canReviewOrder = Boolean(
+        amount
+        && selectedListingId
+        && signalAmount
+        && hasValidRecipientAddress
+        && !listingAmountValidationError,
     );
 
     const loadListings = useCallback(async () => {
@@ -226,7 +292,7 @@ export default function BuyWidget({
     };
 
     const handleReview = () => {
-        if (!amount || !selectedListingId || !signalAmount || !hasValidRecipientAddress) return;
+        if (!canReviewOrder) return;
         setStep("review");
     };
 
@@ -237,6 +303,10 @@ export default function BuyWidget({
         }
 
         if (!selectedListingId || !selectedListing) return;
+        if (listingAmountValidationError) {
+            setStep("form");
+            return;
+        }
 
         setIsSubmitting(true);
         try {
@@ -391,7 +461,7 @@ export default function BuyWidget({
                                             <div className="mt-1 flex items-center justify-between text-sm">
                                                 <span className="text-gray-400">Available</span>
                                                 <span className="text-white font-mono">
-                                                    {formatAmount(String(listing.remaining_deposits))} {selectedToken.sym}
+                                                    {formatAmount(String(listing.remaining_deposits), selectedToken.sym)} {selectedToken.sym}
                                                 </span>
                                             </div>
                                             <div className="mt-1 flex items-center justify-between text-xs">
@@ -467,11 +537,14 @@ export default function BuyWidget({
 
                         <button
                             onClick={handleReview}
-                            disabled={!amount || !selectedListingId || !signalAmount || !hasValidRecipientAddress}
+                            disabled={!canReviewOrder}
                             className="w-full btn-primary py-4 text-base rounded-xl mt-4 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                             Review Order
                         </button>
+                        {listingAmountValidationError && (
+                            <p className="text-xs text-amber-300">{listingAmountValidationError}</p>
+                        )}
                     </>
                 )}
 
@@ -590,9 +663,15 @@ export default function BuyWidget({
                             )}
                         </div>
 
+                        {listingAmountValidationError && (
+                            <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-3">
+                                <p className="text-xs text-amber-200">{listingAmountValidationError}</p>
+                            </div>
+                        )}
+
                         <button
                             onClick={handleConfirm}
-                            disabled={isSubmitting || isConnecting || !selectedListingId}
+                            disabled={isSubmitting || isConnecting || !selectedListingId || !!listingAmountValidationError}
                             className={`w-full py-4 text-base rounded-xl relative overflow-hidden ${isConnected ? "btn-primary" : "bg-blue-600 hover:bg-blue-700 text-white"
                                 }`}
                         >

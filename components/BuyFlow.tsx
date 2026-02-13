@@ -1,6 +1,9 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import Link from "next/link";
+import { useState, useCallback, useEffect, useMemo } from "react";
+import { useSearchParams } from "next/navigation";
+import { formatUnits, parseUnits } from "viem";
 import BuyWidget from "./BuyWidget";
 import TLSNNotarization from "./TLSNNotarization";
 import { nearService } from "@/lib/services/near";
@@ -28,6 +31,8 @@ type BuyIntentHistoryItem = {
 
 const INTENT_EXPIRATION_MS = 86_400_000; // 24h
 const BUY_HISTORY_STORAGE_KEY = "anypay:buy-intent-history:v1";
+const BIGINT_ZERO = BigInt(0);
+const NANO_TO_MS_DIVISOR = BigInt(1_000_000);
 
 function decodeSuccessValue(result: any): unknown {
     const status =
@@ -88,9 +93,9 @@ function toIntentTimestampMs(value: unknown): number | null {
 
     try {
         const raw = BigInt(normalized);
-        if (raw <= 0n) return null;
+        if (raw <= BIGINT_ZERO) return null;
         // Contract stores intent timestamp in nanoseconds.
-        return Number(raw / 1_000_000n);
+        return Number(raw / NANO_TO_MS_DIVISOR);
     } catch {
         const numeric = Number(normalized);
         if (!Number.isFinite(numeric) || numeric <= 0) return null;
@@ -101,6 +106,43 @@ function toIntentTimestampMs(value: unknown): number | null {
 
 function txExplorerUrl(txHash: string): string {
     return `https://testnet.nearblocks.io/txns/${encodeURIComponent(txHash)}`;
+}
+
+function buildHistoryDetailHref(item: BuyIntentHistoryItem): string {
+    const intentId = encodeURIComponent(String(item.intentId || "").trim());
+    const params = new URLSearchParams();
+
+    const append = (key: string, value: unknown) => {
+        const normalized = String(value ?? "").trim();
+        if (!normalized) return;
+        params.set(key, normalized);
+    };
+
+    append("txHash", item.txHash);
+    append("depositId", item.depositId);
+    append("assetId", item.assetId);
+    append("chain", item.chain);
+    append("amount", item.amount);
+    append("fiatAmount", item.fiatAmount);
+    append("paymentMethod", item.paymentMethod);
+    append("status", item.status);
+    append("sellerPlatform", item.sellerPlatform);
+    append("sellerTagname", item.sellerTagname);
+    append("transferMemo", item.transferMemo);
+    append("createdAtMs", item.createdAtMs);
+    append("deadlineAtMs", item.deadlineAtMs);
+
+    const query = params.toString();
+    return query
+        ? `/buy/intents/${intentId}?${query}`
+        : `/buy/intents/${intentId}`;
+}
+
+function toOptionalNumber(value: string): number | null {
+    const normalized = String(value || "").trim();
+    if (!normalized) return null;
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : null;
 }
 
 async function copyText(value: string): Promise<void> {
@@ -215,7 +257,106 @@ function getListingPaymentMethodRaw(listing: unknown): string {
     return raw.trim();
 }
 
-export default function BuyFlow() {
+function getAssetDecimals(symbol: string): number {
+    const normalized = String(symbol || "").trim().toUpperCase();
+    if (normalized === "BTC" || normalized === "ZEC") return 8;
+    if (normalized === "ETH") return 18;
+    return 24;
+}
+
+function toAtomicAmount(value: unknown, decimals: number): bigint | null {
+    const normalized = String(value ?? "").trim();
+    if (!normalized) return null;
+    try {
+        return parseUnits(normalized, decimals);
+    } catch {
+        return null;
+    }
+}
+
+function toBigIntString(value: unknown): bigint | null {
+    const normalized = String(value ?? "").trim();
+    if (!normalized || !/^\d+$/.test(normalized)) return null;
+    try {
+        return BigInt(normalized);
+    } catch {
+        return null;
+    }
+}
+
+function formatAtomicAmount(value: bigint, decimals: number): string {
+    const normalized = formatUnits(value, decimals);
+    return normalized.includes(".") ? normalized.replace(/\.?0+$/, "") : normalized;
+}
+
+type ListingAmountShape = {
+    min_intent_amount?: unknown;
+    max_intent_amount?: unknown;
+    remaining_deposits?: unknown;
+    deposit_id?: unknown;
+};
+
+function canListingSatisfyAmount(listing: unknown, amountAtomic: bigint): boolean {
+    const candidate = listing as ListingAmountShape | null;
+    if (!candidate) return false;
+
+    const min = toBigIntString(candidate.min_intent_amount);
+    const max = toBigIntString(candidate.max_intent_amount);
+    const remaining = toBigIntString(candidate.remaining_deposits);
+    if (min === null || max === null || remaining === null) return false;
+
+    return amountAtomic >= min && amountAtomic <= max && amountAtomic <= remaining;
+}
+
+function buildNoMatchingLiquidityMessage(
+    listings: unknown[],
+    amountAtomic: bigint,
+    symbol: string,
+    decimals: number,
+): string {
+    if (!Array.isArray(listings) || listings.length === 0) {
+        return "No funded listings are currently available. Refresh and try again.";
+    }
+
+    let minRequired: bigint | null = null;
+    let maxAllowed: bigint | null = null;
+
+    for (const listing of listings) {
+        const candidate = listing as ListingAmountShape;
+        const min = toBigIntString(candidate.min_intent_amount);
+        const max = toBigIntString(candidate.max_intent_amount);
+        const remaining = toBigIntString(candidate.remaining_deposits);
+        if (min === null || max === null || remaining === null) continue;
+
+        const upperBound = remaining < max ? remaining : max;
+        if (upperBound <= BIGINT_ZERO) continue;
+
+        if (minRequired === null || min < minRequired) {
+            minRequired = min;
+        }
+        if (maxAllowed === null || upperBound > maxAllowed) {
+            maxAllowed = upperBound;
+        }
+    }
+
+    if (minRequired !== null && amountAtomic < minRequired) {
+        return `Amount below minimum. Current minimum is ${formatAtomicAmount(minRequired, decimals)} ${symbol}.`;
+    }
+
+    if (maxAllowed !== null && amountAtomic > maxAllowed) {
+        return `Amount exceeds available liquidity. Current maximum is ${formatAtomicAmount(maxAllowed, decimals)} ${symbol}.`;
+    }
+
+    return "No funded liquidity matches your amount right now.";
+}
+
+interface BuyFlowProps {
+    initialIntentId?: string;
+}
+
+export default function BuyFlow({ initialIntentId = "" }: BuyFlowProps) {
+    const searchParams = useSearchParams();
+    const searchParamsKey = searchParams.toString();
     const [currentState, setCurrentState] = useState<TradeState>("SIGNAL");
     const [tradeData, setTradeData] = useState<any>(null);
     const [error, setError] = useState("");
@@ -223,9 +364,35 @@ export default function BuyFlow() {
     const [historyItems, setHistoryItems] = useState<BuyIntentHistoryItem[]>([]);
     const [isHistoryLoading, setIsHistoryLoading] = useState(false);
     const [historyError, setHistoryError] = useState("");
+    const [isIntentDetailLoading, setIsIntentDetailLoading] = useState(false);
     const [walletBalanceNear, setWalletBalanceNear] = useState<string | null>(null);
     const [isBalanceLoading, setIsBalanceLoading] = useState(false);
     const { isConnected, connect, accountId, isLoading } = useNear();
+
+    const detailIntentId = useMemo(() => {
+        const fromProp = String(initialIntentId || "").trim();
+        if (fromProp) return fromProp;
+        const params = new URLSearchParams(searchParamsKey);
+        return String(params.get("intentId") || "").trim();
+    }, [initialIntentId, searchParamsKey]);
+
+    const detailQuery = useMemo(() => {
+        const params = new URLSearchParams(searchParamsKey);
+        return {
+            txHash: String(params.get("txHash") || "").trim(),
+            depositId: toOptionalNumber(String(params.get("depositId") || "")),
+            chain: String(params.get("chain") || "").trim(),
+            amount: String(params.get("amount") || "").trim(),
+            fiatAmount: String(params.get("fiatAmount") || "").trim(),
+            paymentMethod: String(params.get("paymentMethod") || "").trim(),
+            status: String(params.get("status") || "").trim(),
+            sellerPlatform: String(params.get("sellerPlatform") || "").trim(),
+            sellerTagname: String(params.get("sellerTagname") || "").trim(),
+            transferMemo: String(params.get("transferMemo") || "").trim(),
+            createdAtMs: toOptionalNumber(String(params.get("createdAtMs") || "")),
+            deadlineAtMs: toOptionalNumber(String(params.get("deadlineAtMs") || "")),
+        };
+    }, [searchParamsKey]);
 
     const loadWalletBalance = useCallback(async () => {
         if (!isConnected || !accountId) {
@@ -328,6 +495,189 @@ export default function BuyFlow() {
         void refreshHistory();
     }, [refreshHistory]);
 
+    const loadIntentDetailView = useCallback(async () => {
+        if (!detailIntentId) return;
+
+        setIsIntentDetailLoading(true);
+        setError("");
+
+        try {
+            const historyCandidates = loadStoredBuyHistory()
+                .filter((row) => row.intentId === detailIntentId)
+                .filter((row) => (accountId ? row.accountId === accountId : true))
+                .sort((a, b) => b.createdAtMs - a.createdAtMs);
+            const historyRow = historyCandidates[0] || null;
+
+            const [intent, transfer] = await Promise.all([
+                nearService.getIntent(detailIntentId).catch(() => null),
+                nearService.getIntentTransferDetails(detailIntentId).catch(() => null),
+            ]);
+
+            if (!intent && !historyRow) {
+                throw new Error("Intent detail not found.");
+            }
+
+            const resolvedDepositId = Number(
+                intent?.deposit_id
+                || detailQuery.depositId
+                || historyRow?.depositId
+                || 0,
+            );
+
+            const deposit = Number.isInteger(resolvedDepositId) && resolvedDepositId > 0
+                ? await nearService.getDeposit(resolvedDepositId).catch(() => null)
+                : null;
+
+            const paymentMethodRaw = String(
+                intent?.payment_method
+                || deposit?.payment_methods?.[0]
+                || detailQuery.paymentMethod
+                || historyRow?.paymentMethod
+                || "",
+            ).trim();
+            const parsedPayment = parsePaymentMethod(paymentMethodRaw);
+
+            const createdAtMs =
+                toIntentTimestampMs((intent as { timestamp?: unknown } | null)?.timestamp)
+                || detailQuery.createdAtMs
+                || historyRow?.createdAtMs
+                || Date.now();
+            const deadlineAtMs =
+                detailQuery.deadlineAtMs
+                || historyRow?.deadlineAtMs
+                || createdAtMs + INTENT_EXPIRATION_MS;
+
+            const sellerPlatform = String(
+                transfer?.platform
+                || parsedPayment.method
+                || detailQuery.sellerPlatform
+                || historyRow?.sellerPlatform
+                || "",
+            ).trim().toLowerCase();
+            const sellerTagname = String(
+                transfer?.tagname
+                || parsedPayment.accountTag
+                || detailQuery.sellerTagname
+                || historyRow?.sellerTagname
+                || "",
+            ).trim();
+            const transferMemo = String(
+                transfer?.memo
+                || detailQuery.transferMemo
+                || historyRow?.transferMemo
+                || detailIntentId,
+            ).trim();
+            const txHash = String(
+                detailQuery.txHash
+                || historyRow?.txHash
+                || "",
+            ).trim();
+            const fiatAmount = String(
+                detailQuery.fiatAmount
+                || historyRow?.fiatAmount
+                || "",
+            ).trim();
+            const amount = String(
+                intent?.amount
+                || detailQuery.amount
+                || historyRow?.amount
+                || "",
+            ).trim();
+            const chain = String(
+                intent?.chain
+                || detailQuery.chain
+                || historyRow?.chain
+                || "",
+            ).trim();
+            const fiatCode = String(intent?.currency_code || "USD").trim().toUpperCase();
+            const intentStatus = String(
+                intent?.status
+                || detailQuery.status
+                || historyRow?.status
+                || "Signaled",
+            ).trim();
+
+            const selectedListing = {
+                depositor: String(deposit?.depositor || ""),
+                payment_methods: Array.isArray(deposit?.payment_methods)
+                    ? deposit.payment_methods
+                    : (paymentMethodRaw ? [paymentMethodRaw] : []),
+            };
+
+            setTradeData((prev: any) => ({
+                ...(prev || {}),
+                mode: "buy",
+                intentId: detailIntentId,
+                depositId: Number.isInteger(resolvedDepositId) && resolvedDepositId > 0
+                    ? resolvedDepositId
+                    : undefined,
+                amount,
+                fiatAmount,
+                payingUsing: {
+                    currency: { code: fiatCode },
+                },
+                chain,
+                recipient: String(intent?.recipient || "").trim(),
+                timestamp: createdAtMs,
+                deadlineAtMs,
+                intentStatus,
+                paymentMethod: sellerPlatform || parsedPayment.method || detailQuery.paymentMethod || historyRow?.paymentMethod || "",
+                paymentMethodRaw,
+                sellerPlatform,
+                sellerTagname,
+                sellerAccountTag: sellerTagname,
+                transferMemo,
+                txHash,
+                selectedListing,
+            }));
+            setCurrentState("NOTARIZE");
+
+            if (accountId) {
+                const hydratedHistory: BuyIntentHistoryItem = {
+                    accountId,
+                    intentId: detailIntentId,
+                    txHash: txHash || undefined,
+                    depositId: Number.isInteger(resolvedDepositId) && resolvedDepositId > 0
+                        ? resolvedDepositId
+                        : historyRow?.depositId,
+                    assetId: historyRow?.assetId,
+                    chain,
+                    amount,
+                    fiatAmount,
+                    paymentMethod: parsedPayment.method || historyRow?.paymentMethod,
+                    createdAtMs,
+                    deadlineAtMs,
+                    status: intentStatus,
+                    sellerPlatform: sellerPlatform || historyRow?.sellerPlatform,
+                    sellerTagname: sellerTagname || historyRow?.sellerTagname,
+                    transferMemo,
+                };
+
+                setHistoryItems((prev) => {
+                    const next = upsertHistoryItem(prev, hydratedHistory);
+                    persistHistoryForAccount(accountId, next);
+                    return next;
+                });
+            }
+        } catch (detailError: unknown) {
+            setError(
+                `Failed to load buy intent detail: ${
+                    detailError instanceof Error ? detailError.message : String(detailError || "unknown error")
+                }`,
+            );
+        } finally {
+            setIsIntentDetailLoading(false);
+        }
+    }, [detailIntentId, accountId, detailQuery]);
+
+    useEffect(() => {
+        if (!detailIntentId) return;
+        if (String(tradeData?.intentId || "").trim() === detailIntentId && currentState === "NOTARIZE") {
+            return;
+        }
+        void loadIntentDetailView();
+    }, [currentState, detailIntentId, loadIntentDetailView, tradeData?.intentId]);
+
     const handleSignal = useCallback(async (data: any) => {
         setError("");
 
@@ -341,6 +691,13 @@ export default function BuyFlow() {
                 throw new Error("Invalid deposit ID");
             }
 
+            const symbol = String(data?.buyingAsset?.token?.sym || data?.chain || "").trim().toUpperCase();
+            const assetDecimals = getAssetDecimals(symbol);
+            const amountAtomic = toAtomicAmount(data?.amount, assetDecimals);
+            if (amountAtomic === null || amountAtomic <= BIGINT_ZERO) {
+                throw new Error("Invalid buy amount");
+            }
+
             const attemptedIds = new Set<number>();
             let selectedListing = data.selectedListing || null;
             let paymentMethodRaw = getListingPaymentMethodRaw(selectedListing)
@@ -349,6 +706,28 @@ export default function BuyFlow() {
                 || String(data.payingUsing?.platform?.name || "").trim().toLowerCase()
                 || "wise";
             let result: any = null;
+
+            if (selectedListing && !canListingSatisfyAmount(selectedListing, amountAtomic) && data.assetId) {
+                attemptedIds.add(depositId);
+                const listings = await nearService.getOpenDepositsByAssetV2(data.assetId, 0, 20);
+                const preMatchedListing = listings.find((listing) => {
+                    const id = Number((listing as ListingAmountShape).deposit_id);
+                    if (!Number.isInteger(id) || id <= 0 || attemptedIds.has(id)) return false;
+                    return canListingSatisfyAmount(listing, amountAtomic);
+                });
+
+                if (!preMatchedListing) {
+                    throw new Error(
+                        buildNoMatchingLiquidityMessage(listings, amountAtomic, symbol || "ASSET", assetDecimals),
+                    );
+                }
+
+                depositId = Number(preMatchedListing.deposit_id);
+                selectedListing = preMatchedListing;
+                paymentMethodRaw = getListingPaymentMethodRaw(preMatchedListing) || paymentMethodRaw;
+                paymentMethod = parsePaymentMethod(paymentMethodRaw).method || paymentMethod;
+                setError("Selected listing changed. Re-matching with a compatible funded listing...");
+            }
 
             for (let attempt = 1; attempt <= 3; attempt++) {
                 try {
@@ -372,17 +751,18 @@ export default function BuyFlow() {
                     const listings = await nearService.getOpenDepositsByAssetV2(data.assetId, 0, 20);
                     const nextListing = listings.find((listing) => {
                         const id = Number(listing.deposit_id);
-                        if (attemptedIds.has(id)) return false;
-                        return true;
+                        if (!Number.isInteger(id) || id <= 0 || attemptedIds.has(id)) return false;
+                        return canListingSatisfyAmount(listing, amountAtomic);
                     });
 
                     if (!nextListing) {
-                        const fallbackMessage = signalError instanceof Error
-                            ? signalError.message
-                            : String(signalError ?? "");
                         throw new Error(
-                            fallbackMessage
-                            || "No funded listings are currently available. Refresh and try again.",
+                            buildNoMatchingLiquidityMessage(
+                                listings,
+                                amountAtomic,
+                                symbol || String(data.buyingAsset?.token?.sym || "ASSET"),
+                                assetDecimals,
+                            ),
                         );
                     }
 
@@ -553,6 +933,16 @@ export default function BuyFlow() {
 
                 {currentState === "SIGNAL" && (
                     <div className="space-y-4">
+                        {detailIntentId && (
+                            <div className="glass-panel p-3">
+                                <p className="text-xs text-blue-200">
+                                    {isIntentDetailLoading
+                                        ? `Loading buy intent ${shortHash(detailIntentId)}...`
+                                        : `Loaded intent ${shortHash(detailIntentId)}.`}
+                                </p>
+                            </div>
+                        )}
+
                         {isConnected && (
                             <div className="glass-panel p-4 space-y-3">
                                 <div className="flex items-center justify-between">
@@ -588,20 +978,12 @@ export default function BuyFlow() {
                                                         {item.status || "Signaled"} · Deadline: {formatDeadlineCountdown(item.deadlineAtMs, clockMs)}
                                                     </p>
                                                 </div>
-                                                {item.txHash ? (
-                                                    <a
-                                                        href={txExplorerUrl(item.txHash)}
-                                                        target="_blank"
-                                                        rel="noreferrer"
-                                                        className="px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-xs whitespace-nowrap"
-                                                    >
-                                                        View Transaction
-                                                    </a>
-                                                ) : (
-                                                    <span className="text-xs text-gray-500 whitespace-nowrap">
-                                                        Tx pending
-                                                    </span>
-                                                )}
+                                                <Link
+                                                    href={buildHistoryDetailHref(item)}
+                                                    className="px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-xs whitespace-nowrap"
+                                                >
+                                                    View Detail
+                                                </Link>
                                             </div>
                                         ))}
                                     </div>
