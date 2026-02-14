@@ -1,8 +1,12 @@
 # AnyPay Legend
 
-Anypay Legend is a NEAR-based P2P crypto settlement app with TLSNotary-backed payment verification.
+## Project Description
 
-Sellers create funded listings (deposits), buyers signal intents, and fulfillment can be completed with signed attestation data generated from TLSN verification.
+AnyPay Legend is a trust-minimized P2P crypto settlement protocol built on NEAR.
+It combines on-chain deposit and intent management with TLSNotary-based payment evidence, so funds can be released only after transfer details are cryptographically verified.
+
+Sellers create funded listings (deposits), buyers signal intents, and a relayer coordinates quote and funding states through NEAR Intents 1Click.
+After payment verification, a signed attestation can be submitted on-chain to complete settlement with a transparent, auditable flow.
 
 ## Architecture
 
