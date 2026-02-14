@@ -1,9 +1,9 @@
-import type { RelayerConfig } from "./config";
-import { IntentsClient } from "./intents-client";
+import type { RelayerConfig } from "./config.ts";
+import { IntentsClient } from "./intents-client.ts";
 import {
   type DepositFundingMetaView,
   NearOracleClient,
-} from "./near-client";
+} from "./near-client.ts";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

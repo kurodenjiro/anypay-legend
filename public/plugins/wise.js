@@ -3,14 +3,14 @@
 /* eslint-disable react-hooks/exhaustive-deps */
 
 // Local TLSN verifier endpoints.
-const VERIFIER_URL = "http://localhost:7047";
+const VERIFIER_URL = "https://d80a-2402-800-6378-31e1-9892-e797-485a-382a.ngrok-free.app";
 const DEFAULT_PROXY_PATH = "/proxy?token=";
 
 // Demo page host used for local proof generation.
 // IMPORTANT:
 // - TLSN permission validator compares request host against URL.hostname (no port).
 // - The verifier proxy token can include host:port. We need :3000 for local demo.
-const demoOrigin = "http://localhost:3000";
+const demoOrigin = "https://anypay-legend.vercel.app";
 const uiPath = "/tlsn-demo/payment";
 const demoUrl = new URL(demoOrigin);
 const requestHost = demoUrl.hostname;

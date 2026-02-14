@@ -72,7 +72,7 @@ async function main() {
   const migrationMethod = process.env.MIGRATION_METHOD?.trim() || "migrate_v3";
   const wasmPath = process.env.WASM_PATH?.trim() || DEFAULT_WASM_PATH;
   const attestationBackendUrl =
-    process.env.ATTESTATION_BACKEND_URL?.trim() || "http://127.0.0.1:3101";
+    process.env.ATTESTATION_BACKEND_URL?.trim() || "http://127.0.0.1:3000/api/attestation";
   const envAttestationKey = normalizeHexKey(process.env.ATTESTATION_PUBLIC_KEY_HEX?.trim() || "");
   const autoFetchAttestationKey = parseBool(process.env.AUTO_FETCH_ATTESTATION_KEY, true);
 

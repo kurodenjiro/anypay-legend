@@ -47,7 +47,7 @@ async function main() {
   const contractId = requireEnv("CONTRACT_ID");
   const ownerId = requireEnv("OWNER_ID");
   const ownerPrivateKey = requireEnv("OWNER_PRIVATE_KEY");
-  const backendUrl = process.env.ATTESTATION_BACKEND_URL?.trim() || "http://127.0.0.1:3101";
+  const backendUrl = process.env.ATTESTATION_BACKEND_URL?.trim() || "http://127.0.0.1:3000/api/attestation";
 
   let attestationPublicKeyHex = normalizeHexKey(process.env.ATTESTATION_PUBLIC_KEY_HEX?.trim() || "");
   if (!attestationPublicKeyHex) {
