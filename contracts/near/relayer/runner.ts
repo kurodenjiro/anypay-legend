@@ -1,9 +1,9 @@
-import type { RelayerConfig } from "./config.ts";
-import { IntentsClient } from "./intents-client.ts";
+import type { RelayerConfig } from "./config";
+import { IntentsClient } from "./intents-client";
 import {
   type DepositFundingMetaView,
   NearOracleClient,
-} from "./near-client.ts";
+} from "./near-client";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -35,7 +35,7 @@ function normalizeAmount(value?: string | number | bigint): string {
   if (value === undefined || value === null) return "0";
 
   if (typeof value === "bigint") {
-    return value >= 0n ? value.toString() : "0";
+    return value >= BigInt(0) ? value.toString() : "0";
   }
 
   if (typeof value === "number") {
@@ -64,7 +64,7 @@ function normalizeAmount(value?: string | number | bigint): string {
 function pickPositiveAmount(values: string[]): string {
   for (const value of values) {
     try {
-      if (BigInt(value) > 0n) return value;
+      if (BigInt(value) > BigInt(0)) return value;
     } catch {
       // ignore and continue
     }

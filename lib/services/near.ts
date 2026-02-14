@@ -1,4 +1,4 @@
-import { setupWalletSelector, type WalletSelector, type AccountState } from "@near-wallet-selector/core";
+import { setupWalletSelector, type WalletSelector } from "@near-wallet-selector/core";
 import { setupMyNearWallet } from "@near-wallet-selector/my-near-wallet";
 import { setupNightly } from "@near-wallet-selector/nightly";
 import { setupModal } from "@near-wallet-selector/modal-ui";
@@ -19,7 +19,7 @@ const CONTRACT_ID = HelloNearContract;
 const V2_STORAGE_FEE_YOCTO =
     process.env.NEXT_PUBLIC_NEAR_V2_STORAGE_FEE_YOCTO || "50000000000000000000000"; // 0.05 NEAR
 const DEPOSIT_FLOW_MODE = process.env.NEXT_PUBLIC_DEPOSIT_FLOW === "legacy" ? "legacy" : "v2";
-const STORAGE_COST_PER_BYTE_YOCTO = 10_000_000_000_000_000_000n;
+const STORAGE_COST_PER_BYTE_YOCTO = BigInt("10000000000000000000");
 
 function normalizeAmountInput(value: string): string {
     return String(value ?? "").trim().replace(",", ".");
@@ -57,14 +57,15 @@ function inferDecimalsFromAssetId(assetId: string): number {
     return 24;
 }
 
-function parseStorageUsage(accountState: AccountState): bigint {
-    const maybeState = accountState as AccountState & { storage_usage?: number | string };
-    const raw = maybeState.storage_usage ?? 0;
+function parseStorageUsage(
+    accountState: { storage_usage?: number | string } | null | undefined,
+): bigint {
+    const raw = accountState?.storage_usage ?? 0;
     try {
         const parsed = BigInt(String(raw));
-        return parsed > 0n ? parsed : 0n;
+        return parsed > BigInt(0) ? parsed : BigInt(0);
     } catch {
-        return 0n;
+        return BigInt(0);
     }
 }
 
@@ -347,7 +348,7 @@ export class NearService {
         const spendableYocto =
             totalYocto > storageLockedYocto
                 ? totalYocto - storageLockedYocto
-                : 0n;
+                : BigInt(0);
 
         return {
             yocto: spendableYocto.toString(),

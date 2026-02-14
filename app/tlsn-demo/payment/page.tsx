@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
     getTlsnDemoProofStorageKey,
@@ -15,12 +15,6 @@ type PluginRunState = "idle" | "running" | "done" | "error";
 type TlsnClient = {
     execCode?: (code: string) => Promise<string>;
 };
-
-declare global {
-    interface Window {
-        tlsn?: TlsnClient;
-    }
-}
 
 function toPlatformTitle(value: string): string {
     const normalized = String(value || "").trim().toLowerCase();
@@ -61,7 +55,7 @@ function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export default function TLSNDemoPaymentPage() {
+function TLSNDemoPaymentPageContent() {
     const searchParams = useSearchParams();
     const intentId = String(searchParams.get("intentId") || "").trim();
     const platform = String(searchParams.get("platform") || "wise").trim().toLowerCase();
@@ -99,6 +93,7 @@ export default function TLSNDemoPaymentPage() {
 
     const canVerifyMemo = transferredMemo.trim().length > 0 && normalizedExpectedMemo.length > 0;
     const proofUnlocked = memoMatches && pluginRunState === "done";
+    const tlsnWindow = window as Window & { tlsn?: TlsnClient };
 
     const appendPluginLog = useCallback((message: string) => {
         const line = `[${new Date().toLocaleTimeString()}] ${message}`;
@@ -114,12 +109,12 @@ export default function TLSNDemoPaymentPage() {
         try {
             appendPluginLog("Waiting for TLSN extension runtime...");
             let attempts = 0;
-            while (!window.tlsn?.execCode && attempts < 20) {
+            while (!tlsnWindow.tlsn?.execCode && attempts < 20) {
                 attempts += 1;
                 await sleep(150);
             }
 
-            if (!window.tlsn?.execCode) {
+            if (!tlsnWindow.tlsn?.execCode) {
                 throw new Error(
                     "TLSN extension API was not detected on this page. Install TLSN extension first.",
                 );
@@ -133,7 +128,7 @@ export default function TLSNDemoPaymentPage() {
             const pluginCode = await response.text();
             appendPluginLog("Executing plugin via TLSN extension...");
 
-            const result = await window.tlsn.execCode(pluginCode);
+            const result = await tlsnWindow.tlsn.execCode(pluginCode);
             const rawResult = String(result || "");
             const executionError = extractPluginError(rawResult);
             if (executionError) {
@@ -152,12 +147,12 @@ export default function TLSNDemoPaymentPage() {
     }, [appendPluginLog, pluginSource]);
 
     useEffect(() => {
-        if (window.tlsn?.execCode) {
+        if (tlsnWindow.tlsn?.execCode) {
             appendPluginLog("TLSN extension client detected.");
         } else {
             appendPluginLog("TLSN extension client not detected.");
         }
-    }, [appendPluginLog]);
+    }, [appendPluginLog, tlsnWindow.tlsn?.execCode]);
 
     useEffect(() => {
         if (!autoRunPlugin) return;
@@ -431,5 +426,13 @@ export default function TLSNDemoPaymentPage() {
                 )}
             </main>
         </div>
+    );
+}
+
+export default function TLSNDemoPaymentPage() {
+    return (
+        <Suspense fallback={<div className="min-h-screen p-6 text-sm text-gray-400">Loading TLSN demo...</div>}>
+            <TLSNDemoPaymentPageContent />
+        </Suspense>
     );
 }

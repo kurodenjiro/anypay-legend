@@ -1,5 +1,5 @@
-import { loadConfig } from "./config.ts";
-import { RelayerRunner } from "./runner.ts";
+import { loadConfig } from "./config";
+import { RelayerRunner } from "./runner";
 
 async function main() {
   const config = loadConfig();

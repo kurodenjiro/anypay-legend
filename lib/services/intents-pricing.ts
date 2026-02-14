@@ -191,7 +191,7 @@ function normalizeTokenMinimum(
     if (/^\d+$/.test(value)) {
         try {
             const amount = BigInt(value);
-            if (amount <= 0n) return null;
+            if (amount <= BigInt(0)) return null;
             if (typeof decimals === "number" && Number.isFinite(decimals) && decimals >= 0) {
                 const formatted = trimTrailingZeros(formatUnits(amount, decimals));
                 return formatted && formatted !== "0" ? formatted : null;

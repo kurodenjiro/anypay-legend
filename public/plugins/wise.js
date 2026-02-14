@@ -4,12 +4,19 @@
 
 // Local TLSN verifier endpoints.
 const VERIFIER_URL = "http://localhost:7047";
-const PROXY_URL_BASE = "ws://localhost:7047/proxy?token=";
+const DEFAULT_PROXY_PATH = "/proxy?token=";
 
 // Demo page host used for local proof generation.
-const host = "localhost:3000";
+// IMPORTANT:
+// - TLSN permission validator compares request host against URL.hostname (no port).
+// - The verifier proxy token can include host:port. We need :3000 for local demo.
+const demoOrigin = "http://localhost:3000";
 const uiPath = "/tlsn-demo/payment";
-const pageNeedle = `${host}${uiPath}`;
+const demoUrl = new URL(demoOrigin);
+const requestHost = demoUrl.hostname;
+const requestHostWithPort = demoUrl.host;
+const pageNeedle = `${requestHostWithPort}${uiPath}`;
+const defaultProxyUrl = `ws://localhost:7047/proxy?token=${requestHostWithPort}`;
 
 const config = {
     name: "Wise Demo Transfer Verifier",
@@ -17,16 +24,31 @@ const config = {
     requests: [
         {
             method: "GET",
-            host,
+            host: requestHost,
             pathname: uiPath,
             verifierUrl: VERIFIER_URL,
+            proxyUrl: defaultProxyUrl,
         },
     ],
     urls: [
-        `http://${host}/*`,
+        `${demoOrigin}/*`,
         "http://localhost:3001/*",
     ],
 };
+
+function deriveProxyUrlBase(verifierUrl) {
+    const fallback = "ws://localhost:7047/proxy?token=";
+    const raw = String(verifierUrl || "").trim();
+    if (!raw) return fallback;
+
+    try {
+        const parsed = new URL(raw);
+        const wsProtocol = parsed.protocol === "https:" ? "wss:" : "ws:";
+        return `${wsProtocol}//${parsed.host}${DEFAULT_PROXY_PATH}`;
+    } catch {
+        return fallback;
+    }
+}
 
 function getVerificationInput() {
     const value = (globalThis && globalThis.VERIFICATION_INPUT) || "";
@@ -82,6 +104,11 @@ function parseVerificationInput(rawInput) {
 function buildProofContext() {
     const verificationInput = getVerificationInput();
     const parsed = parseVerificationInput(verificationInput);
+    const verifierUrl =
+        pickFirst(parsed, ["verifierUrl", "verifier_url"]) || VERIFIER_URL;
+    const proxyUrlBase =
+        pickFirst(parsed, ["proxyUrlBase", "proxy_url_base"]) || deriveProxyUrlBase(verifierUrl);
+
     return {
         verificationInput,
         intentId: pickFirst(parsed, ["intentId", "intent_id", "intentHash", "intent_hash"]),
@@ -91,6 +118,8 @@ function buildProofContext() {
         platform: pickFirst(parsed, ["platform", "expectedPlatform", "expected_platform"]),
         tagname: pickFirst(parsed, ["tagname", "expectedTagname", "expected_tagname"]),
         seller: pickFirst(parsed, ["seller", "sellerId", "seller_id"]),
+        verifierUrl,
+        proxyUrlBase,
     };
 }
 
@@ -104,7 +133,7 @@ function buildTargetUrl(context) {
     if (context.currency) params.set("currency", context.currency);
     if (context.seller) params.set("seller", context.seller);
     const query = params.toString();
-    return query ? `http://${host}${uiPath}?${query}` : `http://${host}${uiPath}`;
+    return query ? `${demoOrigin}${uiPath}?${query}` : `${demoOrigin}${uiPath}`;
 }
 
 function expandUI() {
@@ -170,8 +199,10 @@ async function onClick() {
     const targetUrl = buildTargetUrl(context);
 
     try {
+        const parsedTarget = new URL(targetUrl);
+        const proxyUrl = context.proxyUrlBase + (parsedTarget.host || parsedTarget.hostname);
         const headers = {
-            Host: host,
+            Host: parsedTarget.host || requestHostWithPort,
             Connection: "close",
             "Accept-Encoding": "identity",
         };
@@ -183,8 +214,8 @@ async function onClick() {
                 headers,
             },
             {
-                verifierUrl: VERIFIER_URL,
-                proxyUrl: PROXY_URL_BASE + host,
+                verifierUrl: context.verifierUrl,
+                proxyUrl,
                 maxRecvData: 32768,
                 maxSentData: 8192,
                 sessionData: {
@@ -227,8 +258,8 @@ async function onClick() {
                 pageDetected: !!pageDetected,
                 verificationInput: context.verificationInput,
                 verification: {
-                    verifierUrl: VERIFIER_URL,
-                    proxyUrl: PROXY_URL_BASE + host,
+                    verifierUrl: context.verifierUrl,
+                    proxyUrl,
                     targetUrl,
                 },
                 sessionData: {
@@ -247,10 +278,21 @@ async function onClick() {
     } catch (error) {
         done(
             JSON.stringify({
-                error: toErrorMessage(error),
+                error: (() => {
+                    const message = toErrorMessage(error);
+                    const normalized = message.toLowerCase();
+                    if (
+                        normalized.includes("websocket")
+                        || normalized.includes("proxy")
+                        || normalized.includes("connection refused")
+                    ) {
+                        return `${message}. TLSN verifier/proxy is unreachable. Start it with: npm run tlsn:verifier`;
+                    }
+                    return message;
+                })(),
                 verification: {
-                    verifierUrl: VERIFIER_URL,
-                    proxyUrl: PROXY_URL_BASE + host,
+                    verifierUrl: context.verifierUrl,
+                    proxyUrl: context.proxyUrlBase + requestHostWithPort,
                     targetUrl,
                 },
             }),
