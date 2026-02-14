@@ -250,7 +250,6 @@ async function onClick() {
                         type: "RECV",
                         part: "BODY",
                         action: "REVEAL",
-                        params: { from: 0, to: 8192 },
                     },
                 ],
             },
