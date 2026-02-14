@@ -1,5 +1,5 @@
 {
-  "name": "web-next",
+  "name": "anypay-legend",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -9,6 +9,7 @@
     "lint": "eslint",
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",
+    "relayer:start": "cd contracts/near && bash -lc 'set -a; source relayer/.env; set +a; npm run relayer:start'",
     "contract:deploy:v2": "cd contracts/near && npm run deploy:v2",
     "contract:migrate:v3": "cd contracts/near && npm run migrate:v3",
     "contract:set:attestation-key": "cd contracts/near && npm run set:attestation-key",

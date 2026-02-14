@@ -3,60 +3,150 @@
 
 @layer base {
     :root {
-        /* Base Colors - Dark Theme with Soft Gradients */
-        --background: 240 10% 4%;
-        --foreground: 0 0% 100%;
-
-        --card: 240 10% 6%;
-        --card-foreground: 0 0% 100%;
-
-        --primary: 252 100% 65%;
-        /* Soft Blue/Purple */
-        --primary-foreground: 0 0% 100%;
-
-        --radius: 1.5rem;
-        /* Rounded cards */
+        --background: #05070b;
+        --background-soft: #090d14;
+        --surface: rgba(10, 16, 28, 0.78);
+        --surface-strong: rgba(8, 13, 24, 0.92);
+        --border-soft: rgba(123, 156, 201, 0.22);
+        --border-strong: rgba(64, 211, 255, 0.36);
+        --text-main: #f4f8ff;
+        --text-muted: #9ba9bd;
+        --accent: #22d3ee;
+        --accent-strong: #06b6d4;
+        --accent-alt: #34d399;
+        --danger: #fb7185;
+        --radius: 1.2rem;
     }
 
     body {
-        @apply bg-[#050505] text-white antialiased;
-        font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-
-        /* Soft Aurora Gradients */
+        @apply text-white antialiased;
+        color: var(--text-main);
+        font-family: var(--font-body), "Trebuchet MS", sans-serif;
         background:
-            radial-gradient(circle at 15% 50%, rgba(59, 130, 246, 0.08) 0%, transparent 50%),
-            /* Blue */
-            radial-gradient(circle at 85% 30%, rgba(168, 85, 247, 0.08) 0%, transparent 50%),
-            /* Purple */
-            radial-gradient(circle at 50% 80%, rgba(16, 185, 129, 0.05) 0%, transparent 50%);
-        /* Green */
+            radial-gradient(circle at 8% 22%, rgba(34, 211, 238, 0.12) 0%, transparent 42%),
+            radial-gradient(circle at 90% 12%, rgba(52, 211, 153, 0.08) 0%, transparent 36%),
+            radial-gradient(circle at 56% 84%, rgba(14, 165, 233, 0.08) 0%, transparent 34%),
+            linear-gradient(145deg, var(--background) 0%, var(--background-soft) 58%, #05070a 100%);
         background-attachment: fixed;
         min-height: 100vh;
+    }
+
+    body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: -1;
+        opacity: 0.15;
+        background-image:
+            linear-gradient(to right, rgba(148, 163, 184, 0.2) 1px, transparent 1px),
+            linear-gradient(to bottom, rgba(148, 163, 184, 0.2) 1px, transparent 1px);
+        background-size: 46px 46px;
+        mask-image: radial-gradient(circle at center, black 30%, transparent 100%);
+    }
+
+    h1,
+    h2,
+    h3,
+    h4,
+    .brand-display {
+        font-family: var(--font-display), "Trebuchet MS", sans-serif;
+        letter-spacing: -0.02em;
+    }
+
+    input,
+    select,
+    textarea {
+        color-scheme: dark;
     }
 }
 
 @layer components {
-
-    /* Modern Web3 Card Style */
     .glass-panel,
     .glass-card,
     .swap-widget {
-        @apply bg-[#0A0A0A]/80 backdrop-blur-xl border border-white/5 shadow-2xl rounded-3xl;
-        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        border-radius: 1.5rem;
+        border: 1px solid var(--border-soft);
+        background:
+            linear-gradient(160deg, rgba(18, 30, 46, 0.94), rgba(9, 15, 27, 0.9)),
+            var(--surface);
+        backdrop-filter: blur(16px);
+        box-shadow:
+            0 18px 40px -18px rgba(6, 11, 22, 0.9),
+            inset 0 1px 0 rgba(255, 255, 255, 0.06);
     }
 
-    /* Buttons */
+    .swap-widget {
+        position: relative;
+        overflow: hidden;
+    }
+
+    .swap-widget::before {
+        content: "";
+        position: absolute;
+        inset: 1px;
+        border-radius: calc(1.5rem - 1px);
+        pointer-events: none;
+        background: linear-gradient(
+            135deg,
+            rgba(34, 211, 238, 0.08) 0%,
+            transparent 42%,
+            rgba(52, 211, 153, 0.06) 100%
+        );
+    }
+
     .btn-primary {
-        @apply bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold py-3 px-8 rounded-full transition-all shadow-lg shadow-indigo-500/20 active:scale-95;
+        border-radius: 0.95rem;
+        border: 1px solid rgba(95, 225, 255, 0.28);
+        background:
+            linear-gradient(118deg, #0891b2 0%, #0ea5e9 45%, #10b981 100%);
+        color: #ecfeff;
+        font-weight: 700;
+        letter-spacing: 0.01em;
+        transition: transform 180ms ease, box-shadow 220ms ease, filter 220ms ease;
+        box-shadow:
+            0 12px 30px -16px rgba(45, 212, 191, 0.8),
+            inset 0 1px 0 rgba(255, 255, 255, 0.24);
+    }
+
+    .btn-primary:hover {
+        transform: translateY(-1px);
+        filter: brightness(1.06);
+        box-shadow:
+            0 18px 34px -20px rgba(45, 212, 191, 0.95),
+            inset 0 1px 0 rgba(255, 255, 255, 0.28);
+    }
+
+    .btn-primary:disabled {
+        filter: saturate(0.3);
+        transform: none;
     }
 
     .btn-ghost {
-        @apply bg-transparent hover:bg-white/5 text-gray-400 hover:text-white font-medium py-2 px-4 rounded-full transition-all;
+        @apply bg-transparent text-slate-300 hover:text-white font-medium py-2 px-4 rounded-xl transition-all;
+        border: 1px solid rgba(148, 163, 184, 0.22);
     }
 
-    /* Inputs */
+    .btn-ghost:hover {
+        background: rgba(148, 163, 184, 0.1);
+        border-color: rgba(125, 211, 252, 0.34);
+    }
+
     .input-dark {
-        @apply bg-white/5 border border-white/5 rounded-2xl px-4 py-3 text-lg text-white placeholder-gray-600 outline-none focus:border-indigo-500/50 focus:bg-white/10 transition-all w-full;
+        @apply rounded-xl px-4 py-3 text-base outline-none transition-all w-full;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        background: rgba(15, 23, 36, 0.66);
+        color: #e8f2ff;
+    }
+
+    .input-dark::placeholder {
+        color: #6d7a8e;
+    }
+
+    .input-dark:focus {
+        border-color: var(--border-strong);
+        box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.16);
+        background: rgba(17, 26, 40, 0.9);
     }
 }
 
@@ -65,11 +155,28 @@
         text-wrap: balance;
     }
 
+    .card-outline {
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        background: rgba(10, 16, 29, 0.62);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    }
+
     .mask-gradient {
         mask-image: linear-gradient(to bottom, black 0%, transparent 100%);
     }
 
-    /* Animations */
+    @keyframes fade-in {
+        from {
+            opacity: 0;
+            transform: translateY(10px);
+        }
+
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
     @keyframes fade-in-up {
         0% {
             opacity: 0;
@@ -84,6 +191,10 @@
 
     .animate-fade-in-up {
         animation: fade-in-up 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+
+    .animate-fade-in {
+        animation: fade-in 0.45s ease-out forwards;
     }
 
     .delay-100 {

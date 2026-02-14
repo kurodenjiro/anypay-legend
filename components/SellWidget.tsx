@@ -88,6 +88,10 @@ function getMinimumSpendableNearForFundingIntent(): number {
     }
 }
 
+const PAYMENT_PLATFORM_OPTIONS = [
+    { value: "wise", label: "Wise", logo: "W" },
+] as const;
+
 export default function SellWidget({
     onDeposit,
     isConnected,
@@ -107,13 +111,14 @@ export default function SellWidget({
         network: "Bitcoin",
     });
     const [paymentPlatform, setPaymentPlatform] = useState("wise");
-    const selectedPlatform = useMemo(
-        () => ({
-            name: paymentPlatform.trim() || "wise",
-            logo: "W",
-        }),
-        [paymentPlatform],
-    );
+    const selectedPlatform = useMemo(() => {
+        const normalized = paymentPlatform.trim().toLowerCase() || "wise";
+        const matched = PAYMENT_PLATFORM_OPTIONS.find((item) => item.value === normalized);
+        return {
+            name: matched?.value || "wise",
+            logo: matched?.logo || "W",
+        };
+    }, [paymentPlatform]);
     const [selectedCurrency] = useState({ code: "USD", flag: "🇺🇸" });
     const [refundTo, setRefundTo] = useState("");
     const [wiseAccountTag, setWiseAccountTag] = useState("");
@@ -388,24 +393,27 @@ export default function SellWidget({
     };
 
     return (
-        <div className="swap-widget w-full max-w-[500px] mx-auto p-0 overflow-hidden relative group">
+        <div className="swap-widget w-full max-w-[520px] mx-auto p-0 overflow-hidden relative group ring-1 ring-cyan-300/10">
             {/* Glow Effect */}
-            <div className="absolute -top-20 -right-20 w-64 h-64 bg-purple-500/10 rounded-full blur-3xl pointer-events-none group-hover:bg-purple-500/20 transition-all duration-700"></div>
+            <div className="absolute -top-20 -right-20 w-64 h-64 bg-emerald-400/10 rounded-full blur-3xl pointer-events-none group-hover:bg-cyan-400/15 transition-all duration-700" />
 
             {/* Header */}
-            <div className="p-6 pb-2 relative z-10 text-center">
-                <h2 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-pink-400 mb-1">
+            <div className="p-6 pb-2 relative z-10 text-center space-y-1.5">
+                <span className="inline-flex px-2.5 py-1 rounded-full text-[10px] uppercase tracking-[0.12em] border border-emerald-300/25 bg-emerald-500/10 text-emerald-100/80">
+                    Seller Flow
+                </span>
+                <h2 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-cyan-200 via-emerald-200 to-teal-300 mb-1">
                     Sell Crypto
                 </h2>
-                <p className="text-xs text-gray-500">Off-ramp crypto to fiat instantly.</p>
+                <p className="text-xs text-slate-400">Off-ramp crypto to fiat instantly.</p>
             </div>
 
             {/* Content */}
             <div className="px-6 pb-8 space-y-5 relative z-10 pt-4">
                 {step === "list" && (
                     <div className="space-y-3">
-                        <div className="flex items-center justify-between px-2 pb-2 border-b border-white/5">
-                            <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        <div className="flex items-center justify-between px-2 pb-2 border-b border-slate-300/15">
+                            <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">
                                 Select Asset to Sell
                             </span>
                         </div>
@@ -414,18 +422,18 @@ export default function SellWidget({
                             <button
                                 key={asset.sym}
                                 onClick={() => handleAssetSelect(asset)}
-                                className="w-full flex items-center justify-between bg-[#050505]/50 p-4 rounded-xl border border-white/5 hover:bg-white/5 transition-all group text-left"
+                                className="w-full flex items-center justify-between card-outline p-4 rounded-xl hover:border-cyan-300/30 hover:bg-cyan-500/10 transition-all group text-left"
                             >
                                 <div className="flex items-center gap-3">
-                                    <div className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center text-xl">
+                                    <div className="w-10 h-10 rounded-full bg-slate-100/10 flex items-center justify-center text-xl">
                                         {asset.icon}
                                     </div>
                                     <div>
                                         <h4 className="text-white font-bold">{asset.sym}</h4>
-                                        <p className="text-xs text-gray-500">{asset.network}</p>
+                                        <p className="text-xs text-slate-400">{asset.network}</p>
                                     </div>
                                 </div>
-                                <div className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center text-gray-400 group-hover:bg-white/10 group-hover:text-white transition-colors">
+                                <div className="w-8 h-8 rounded-full bg-slate-200/5 flex items-center justify-center text-slate-300 group-hover:bg-cyan-500/20 group-hover:text-cyan-100 transition-colors">
                                     →
                                 </div>
                             </button>
@@ -437,15 +445,15 @@ export default function SellWidget({
                     <>
                         <button
                             onClick={() => setStep("list")}
-                            className="flex items-center gap-1 text-xs text-gray-500 hover:text-white mb-2 transition-colors"
+                            className="flex items-center gap-1 text-xs text-slate-400 hover:text-white mb-2 transition-colors"
                         >
                             ← Back to Assets
                         </button>
 
                         {/* Deposit Card */}
-                        <div className="w-full bg-[#050505]/50 border border-white/5 rounded-2xl p-4 space-y-4">
+                        <div className="w-full card-outline rounded-2xl p-4 space-y-4">
                             <div className="flex justify-between items-center">
-                                <label className="text-xs font-medium text-gray-400">
+                                <label className="text-xs font-medium text-slate-300">
                                     You Deposit (Crypto)
                                 </label>
                             </div>
@@ -459,20 +467,20 @@ export default function SellWidget({
                                     value={amount}
                                     onChange={(e) => setAmount(e.target.value)}
                                     placeholder="0.00"
-                                    className="bg-transparent text-3xl font-medium text-white placeholder-gray-700 outline-none w-full"
+                                    className="bg-transparent text-3xl font-medium text-white placeholder-slate-600 outline-none w-full"
                                 />
-                                <div className="flex items-center gap-2 bg-white/10 px-3 py-1.5 rounded-xl border border-white/10">
+                                <div className="flex items-center gap-2 bg-slate-100/10 px-3 py-1.5 rounded-xl border border-slate-300/25">
                                     <span className="text-xl">{selectedToken.icon}</span>
                                     <span className="font-bold text-white">{selectedToken.sym}</span>
                                 </div>
                             </div>
-                            <p className="text-xs text-gray-500">
+                            <p className="text-xs text-slate-400">
                                 Minimum: {minimumDepositAmount} {selectedToken.sym}
                             </p>
                         </div>
 
-                        <div className="w-full bg-[#050505]/50 border border-white/5 rounded-2xl p-4 space-y-2">
-                            <label className="text-xs font-medium text-gray-400">
+                        <div className="w-full card-outline rounded-2xl p-4 space-y-2">
+                            <label className="text-xs font-medium text-slate-300">
                                 Refund Address ({selectedToken.sym})
                             </label>
                             <input
@@ -480,31 +488,39 @@ export default function SellWidget({
                                 value={refundTo}
                                 onChange={(e) => setRefundTo(e.target.value)}
                                 placeholder={getRefundAddressHint(selectedToken.sym)}
-                                className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white outline-none focus:border-purple-400/60"
+                                className="input-dark"
                             />
-                            <p className="text-xs text-gray-500">
+                            <p className="text-xs text-slate-400">
                                 Used by Near Intents if funding fails or is refunded.
                             </p>
                         </div>
 
-                        <div className="w-full bg-[#050505]/50 border border-white/5 rounded-2xl p-4 space-y-2">
-                            <label className="text-xs font-medium text-gray-400">
+                        <div className="w-full card-outline rounded-2xl p-4 space-y-2">
+                            <label className="text-xs font-medium text-slate-300">
                                 Payment Platform
                             </label>
-                            <input
-                                type="text"
+                            <select
                                 value={paymentPlatform}
-                                onChange={(e) => setPaymentPlatform(e.target.value)}
-                                placeholder="wise"
-                                className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white outline-none focus:border-purple-400/60"
-                            />
-                            <p className="text-xs text-gray-500">
+                                onChange={(e) => setPaymentPlatform(e.target.value.trim().toLowerCase())}
+                                className="input-dark"
+                            >
+                                {PAYMENT_PLATFORM_OPTIONS.map((option) => (
+                                    <option
+                                        key={option.value}
+                                        value={option.value}
+                                        className="bg-slate-900 text-white"
+                                    >
+                                        {option.label}
+                                    </option>
+                                ))}
+                            </select>
+                            <p className="text-xs text-slate-400">
                                 Buyers will send fiat to this platform.
                             </p>
                         </div>
 
-                        <div className="w-full bg-[#050505]/50 border border-white/5 rounded-2xl p-4 space-y-2">
-                            <label className="text-xs font-medium text-gray-400">
+                        <div className="w-full card-outline rounded-2xl p-4 space-y-2">
+                            <label className="text-xs font-medium text-slate-300">
                                 Seller Tagname
                             </label>
                             <input
@@ -512,31 +528,31 @@ export default function SellWidget({
                                 value={wiseAccountTag}
                                 onChange={(e) => setWiseAccountTag(e.target.value)}
                                 placeholder="Enter your Wise handle / account tagname"
-                                className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white outline-none focus:border-purple-400/60"
+                                className="input-dark"
                             />
-                            <p className="text-xs text-gray-500">
+                            <p className="text-xs text-slate-400">
                                 This account tagname is shown to buyers for payout transfer.
                             </p>
                         </div>
 
                         {/* Receive Card */}
                         <div className="relative">
-                            <div className="absolute left-1/2 -top-3 -translate-x-1/2 w-8 h-8 bg-[#111] rounded-full border border-white/10 flex items-center justify-center text-gray-500 z-10">
+                            <div className="absolute left-1/2 -top-3 -translate-x-1/2 w-8 h-8 bg-slate-900 rounded-full border border-slate-400/20 flex items-center justify-center text-slate-400 z-10">
                                 ↓
                             </div>
 
-                            <div className="bg-[#050505]/50 border border-white/5 rounded-2xl p-4 pt-6 space-y-4">
+                            <div className="card-outline rounded-2xl p-4 pt-6 space-y-4">
                                 <div className="flex justify-between items-center">
-                                    <label className="text-xs font-medium text-gray-400">
+                                    <label className="text-xs font-medium text-slate-300">
                                         You Receive (Fiat)
                                     </label>
-                                    <div className="flex items-center gap-2 px-2 py-1 rounded-full bg-white/5 border border-white/5 text-xs text-gray-300">
+                                    <div className="flex items-center gap-2 px-2 py-1 rounded-full bg-slate-100/5 border border-slate-400/20 text-xs text-slate-300">
                                         via {selectedPlatform.name}
                                     </div>
                                 </div>
 
                                 <div className="flex items-center justify-between">
-                                    <div className="text-2xl font-bold text-gray-500">
+                                    <div className="text-2xl font-bold text-slate-300">
                                         {estimatedFiat === null
                                             ? `≈ -- ${selectedCurrency.code}`
                                             : `≈ ${formatUsdValue(estimatedFiat)}`}
@@ -550,7 +566,7 @@ export default function SellWidget({
                                         </span>
                                     </div>
                                 </div>
-                                <p className="text-xs text-gray-500">
+                                <p className="text-xs text-slate-400">
                                     {assetUsdPrice
                                         ? `1 ${selectedToken.sym} ≈ ${formatUsdValue(assetUsdPrice)}`
                                         : "Price unavailable"}
@@ -580,76 +596,76 @@ export default function SellWidget({
                     <>
                         <button
                             onClick={() => setStep("form")}
-                            className="flex items-center gap-1 text-xs text-gray-500 hover:text-white mb-2 transition-colors"
+                            className="flex items-center gap-1 text-xs text-slate-400 hover:text-white mb-2 transition-colors"
                         >
                             ← Edit Deposit
                         </button>
 
-                        <div className="bg-white/5 border border-white/10 rounded-2xl p-6 space-y-6">
+                        <div className="card-outline rounded-2xl p-6 space-y-6">
                             <h3 className="text-lg font-bold text-white text-center">
                                 Confirm Deposit
                             </h3>
 
                             <div className="space-y-4">
                                 <div className="flex justify-between items-center">
-                                    <span className="text-gray-400">Depositing</span>
+                                    <span className="text-slate-400">Depositing</span>
                                     <span className="text-white font-bold text-lg">
                                         {amount} {selectedToken.sym}
                                     </span>
                                 </div>
                                 <div className="flex justify-between items-center">
-                                    <span className="text-gray-400">Receiving</span>
+                                    <span className="text-slate-400">Receiving</span>
                                     <span className="text-white font-bold text-lg">
                                         {estimatedFiat === null
                                             ? `≈ -- ${selectedCurrency.code}`
                                             : `≈ ${formatUsdValue(estimatedFiat)}`}
                                     </span>
                                 </div>
-                                <div className="w-full h-px bg-white/10"></div>
+                                <div className="w-full h-px bg-slate-300/15"></div>
                                 <div className="flex justify-between items-center text-sm">
-                                    <span className="text-gray-400">Payment Via</span>
+                                    <span className="text-slate-400">Payment Via</span>
                                     <span className="text-white">{selectedPlatform.name}</span>
                                 </div>
                                 <div className="flex justify-between items-center text-sm">
-                                    <span className="text-gray-400">Seller Tagname</span>
+                                    <span className="text-slate-400">Seller Tagname</span>
                                     <span className="text-white font-mono text-xs truncate w-56 text-right">
                                         {normalizedWiseAccountTag || "Not set"}
                                     </span>
                                 </div>
                                 <div className="flex justify-between items-center text-sm">
-                                    <span className="text-gray-400">Network</span>
-                                    <span className="text-purple-400">{selectedToken.network}</span>
+                                    <span className="text-slate-400">Network</span>
+                                    <span className="text-cyan-300">{selectedToken.network}</span>
                                 </div>
                                 <div className="flex justify-between items-center text-sm">
-                                    <span className="text-gray-400">Asset ID</span>
+                                    <span className="text-slate-400">Asset ID</span>
                                     <span className="text-white font-mono text-xs">
                                         {selectedAssetId}
                                     </span>
                                 </div>
                                 <div className="flex justify-between items-center text-sm">
-                                    <span className="text-gray-400">Refund To</span>
+                                    <span className="text-slate-400">Refund To</span>
                                     <span className="text-white font-mono text-xs truncate w-56 text-right">
                                         {refundTo || "Not set"}
                                     </span>
                                 </div>
                                 {hasQuotePreviewData && quotePreview && (
                                     <>
-                                        <div className="w-full h-px bg-white/10"></div>
+                                        <div className="w-full h-px bg-slate-300/15"></div>
                                         <div className="flex justify-between items-center text-sm">
-                                            <span className="text-gray-400">Quote Amount (Atomic)</span>
+                                            <span className="text-slate-400">Quote Amount (Atomic)</span>
                                             <span className="text-white font-mono text-xs">{quotePreview.quoteAmountIn}</span>
                                         </div>
                                         <div className="flex justify-between items-center text-sm">
-                                            <span className="text-gray-400">Submitted Amount (Atomic)</span>
+                                            <span className="text-slate-400">Submitted Amount (Atomic)</span>
                                             <span className="text-emerald-300 font-mono text-xs">{quotePreview.amountAtomic}</span>
                                         </div>
                                     </>
                                 )}
                             </div>
 
-                            <div className="bg-purple-500/10 border border-purple-500/20 rounded-xl p-3 flex gap-3">
+                            <div className="bg-cyan-500/10 border border-cyan-500/25 rounded-xl p-3 flex gap-3">
                                 <span className="text-xl">ℹ️</span>
-                                <p className="text-xs text-purple-200/80 leading-relaxed">
+                                <p className="text-xs text-cyan-100/85 leading-relaxed">
                                     {isV2FlowEnabled
                                         ? `You are creating a funding intent. Send ${selectedToken.sym} to the generated address before the deadline to activate your listing.`
                                         : `Your crypto will be deposited into the MPC vault. Buyers will match your order and pay you via ${selectedPlatform.name}.`}
@@ -657,14 +673,14 @@ export default function SellWidget({
                             </div>
 
                             {isConnected && (
-                                <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-3 space-y-3">
+                                <div className="bg-sky-500/10 border border-sky-500/25 rounded-xl p-3 space-y-3">
                                     <div className="flex items-center justify-between text-xs">
-                                        <span className="text-blue-200/80">Wallet</span>
-                                        <span className="font-mono text-blue-100">{shortAccountId(accountId)}</span>
+                                        <span className="text-sky-100/80">Wallet</span>
+                                        <span className="font-mono text-sky-100">{shortAccountId(accountId)}</span>
                                     </div>
                                     <div className="flex items-center justify-between text-xs">
-                                        <span className="text-blue-200/80">Available NEAR</span>
-                                        <span className="text-blue-100">
+                                        <span className="text-sky-100/80">Available NEAR</span>
+                                        <span className="text-sky-100">
                                             {isBalanceLoading ? "Loading..." : formatBalance(walletBalanceNear)}
                                         </span>
                                     </div>
@@ -678,7 +694,7 @@ export default function SellWidget({
                                         <button
                                             type="button"
                                             onClick={() => void onRefreshBalance()}
-                                            className="px-3 py-1.5 rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 text-xs text-white transition-colors"
+                                            className="px-3 py-1.5 rounded-lg border border-slate-300/20 bg-slate-100/5 hover:bg-slate-200/10 text-xs text-white transition-colors"
                                         >
                                             Refresh
                                         </button>
@@ -703,7 +719,7 @@ export default function SellWidget({
                                 || isConnecting
                                 || (isConnected && isV2FlowEnabled && !hasSufficientNearForFundingIntent)
                             }
-                            className={`w-full py-4 text-base rounded-xl relative overflow-hidden ${isConnected ? "btn-primary" : "bg-blue-600 hover:bg-blue-700 text-white"
+                            className={`w-full py-4 text-base rounded-xl relative overflow-hidden ${isConnected ? "btn-primary" : "bg-sky-700 hover:bg-sky-600 text-white border border-sky-300/30"
                                 } cursor-pointer disabled:cursor-not-allowed`}
                         >
                             {isSubmitting ? (

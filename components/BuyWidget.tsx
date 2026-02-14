@@ -12,7 +12,7 @@ import { getUsdPriceByAssetId } from "@/lib/services/intents-pricing";
 import { parsePaymentMethod } from "@/lib/services/payment-method";
 
 interface BuyWidgetProps {
-    onSignal: (data: any) => Promise<void>;
+    onSignal: (data: BuySignalInput) => Promise<void>;
     isConnected: boolean;
     onConnect: () => Promise<void>;
     accountId: string | null;
@@ -21,6 +21,31 @@ interface BuyWidgetProps {
     isBalanceLoading: boolean;
     onRefreshBalance: () => Promise<void>;
 }
+
+type BuySignalInput = {
+    amount: string;
+    fiatAmount: string;
+    mode: "buy";
+    depositId: number;
+    candidateDepositIds: number[];
+    assetId: string;
+    payingUsing: {
+        platform: { name: string; logo: string };
+        currency: { code: string; flag: string };
+    };
+    buyingAsset: {
+        token: {
+            sym: string;
+            name: string;
+            icon: string;
+            network: string;
+        };
+    };
+    recipient: string;
+    listingPaymentMethodRaw: string;
+    sellerAccountTag: string;
+    selectedListing: DepositSummaryV2 | null;
+};
 
 function shortAccountId(accountId: string | null): string {
     if (!accountId) return "Unknown";
@@ -243,9 +268,10 @@ export default function BuyWidget({
                 }
                 return Number(normalized[0].deposit_id);
             });
-        } catch (error: any) {
+        } catch (error: unknown) {
             console.error("BuyWidget: failed to load funded listings", error);
-            setListingsError(error?.message || "Failed to load listings");
+            const message = error instanceof Error ? error.message : "Failed to load listings";
+            setListingsError(message);
             setListings([]);
             setSelectedListingId(null);
         } finally {
@@ -333,21 +359,24 @@ export default function BuyWidget({
     };
 
     return (
-        <div className="swap-widget w-full max-w-[500px] mx-auto p-0 overflow-hidden relative group">
-            <div className="absolute -top-20 -right-20 w-64 h-64 bg-blue-500/10 rounded-full blur-3xl pointer-events-none group-hover:bg-blue-500/20 transition-all duration-700" />
+        <div className="swap-widget w-full max-w-[520px] mx-auto p-0 overflow-hidden relative group ring-1 ring-cyan-300/10">
+            <div className="absolute -top-20 -right-20 w-64 h-64 bg-cyan-400/10 rounded-full blur-3xl pointer-events-none group-hover:bg-emerald-400/15 transition-all duration-700" />
 
-            <div className="p-6 pb-2 relative z-10 text-center">
-                <h2 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-cyan-400 mb-1">
+            <div className="p-6 pb-2 relative z-10 text-center space-y-1.5">
+                <span className="inline-flex px-2.5 py-1 rounded-full text-[10px] uppercase tracking-[0.12em] border border-cyan-300/25 bg-cyan-500/10 text-cyan-100/80">
+                    Buyer Flow
+                </span>
+                <h2 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-sky-200 via-cyan-200 to-emerald-300 mb-1">
                     Buy Crypto
                 </h2>
-                <p className="text-xs text-gray-500">Select funded liquidity, then signal intent.</p>
+                <p className="text-xs text-slate-400">Select funded liquidity, then signal intent.</p>
             </div>
 
             <div className="px-6 pb-8 space-y-5 relative z-10 pt-4">
                 {step === "list" && (
                     <div className="space-y-3">
-                        <div className="flex items-center justify-between px-2 pb-2 border-b border-white/5">
-                            <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        <div className="flex items-center justify-between px-2 pb-2 border-b border-slate-300/15">
+                            <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">
                                 Select Asset to Buy
                             </span>
                         </div>
@@ -356,18 +385,18 @@ export default function BuyWidget({
                             <button
                                 key={asset.sym}
                                 onClick={() => handleAssetSelect(asset)}
-                                className="w-full flex items-center justify-between bg-[#050505]/50 p-4 rounded-xl border border-white/5 hover:bg-white/5 transition-all group text-left"
+                                className="w-full flex items-center justify-between card-outline p-4 rounded-xl hover:border-cyan-300/30 hover:bg-cyan-500/10 transition-all group text-left"
                             >
                                 <div className="flex items-center gap-3">
-                                    <div className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center text-xl">
+                                    <div className="w-10 h-10 rounded-full bg-slate-100/10 flex items-center justify-center text-xl">
                                         {asset.icon}
                                     </div>
                                     <div>
                                         <h4 className="text-white font-bold">{asset.sym}</h4>
-                                        <p className="text-xs text-gray-500">{asset.network}</p>
+                                        <p className="text-xs text-slate-400">{asset.network}</p>
                                     </div>
                                 </div>
-                                <div className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center text-gray-400 group-hover:bg-white/10 group-hover:text-white transition-colors">
+                                <div className="w-8 h-8 rounded-full bg-slate-100/5 flex items-center justify-center text-slate-300 group-hover:bg-cyan-500/20 group-hover:text-cyan-100 transition-colors">
                                     →
                                 </div>
                             </button>
@@ -379,14 +408,14 @@ export default function BuyWidget({
                     <>
                         <button
                             onClick={() => setStep("list")}
-                            className="flex items-center gap-1 text-xs text-gray-500 hover:text-white mb-2 transition-colors"
+                            className="flex items-center gap-1 text-xs text-slate-400 hover:text-white mb-2 transition-colors"
                         >
                             ← Back to Assets
                         </button>
 
-                        <div className="w-full bg-[#050505]/50 border border-white/5 rounded-2xl p-4 space-y-4">
+                        <div className="w-full card-outline rounded-2xl p-4 space-y-4">
                             <div className="flex justify-between items-center">
-                                <label className="text-xs font-medium text-gray-400">
+                                <label className="text-xs font-medium text-slate-300">
                                     You Pay (Fiat)
                                 </label>
                             </div>
@@ -397,27 +426,27 @@ export default function BuyWidget({
                                     value={amount}
                                     onChange={(e) => setAmount(e.target.value)}
                                     placeholder="0.00"
-                                    className="bg-transparent text-3xl font-medium text-white placeholder-gray-700 outline-none w-full"
+                                    className="bg-transparent text-3xl font-medium text-white placeholder-slate-600 outline-none w-full"
                                 />
                                 <span className="text-white font-bold text-lg">{selectedCurrency.code}</span>
                             </div>
                         </div>
 
-                        <div className="w-full bg-[#050505]/50 border border-white/5 rounded-2xl p-4 space-y-3">
+                        <div className="w-full card-outline rounded-2xl p-4 space-y-3">
                             <div className="flex items-center justify-between">
-                                <label className="text-xs font-medium text-gray-400">
+                                <label className="text-xs font-medium text-slate-300">
                                     Funded Listings ({selectedToken.sym})
                                 </label>
                                 <button
                                     type="button"
                                     onClick={() => void loadListings()}
-                                    className="text-xs px-2 py-1 rounded border border-white/20 bg-white/5 hover:bg-white/10 text-white"
+                                    className="text-xs px-2 py-1 rounded border border-slate-300/25 bg-slate-100/5 hover:bg-slate-100/10 text-white"
                                 >
                                     Refresh
                                 </button>
                             </div>
 
-                            <p className="text-xs text-gray-500 font-mono break-all">Asset ID: {selectedAssetId}</p>
+                            <p className="text-xs text-slate-400 font-mono break-all">Asset ID: {selectedAssetId}</p>
 
                             {isListingsLoading && (
                                 <div className="text-xs text-blue-200 bg-blue-500/10 border border-blue-500/20 rounded-xl p-3">
@@ -451,27 +480,27 @@ export default function BuyWidget({
                                             className={`w-full text-left rounded-xl border p-3 transition-colors ${
                                                 isSelected
                                                     ? "border-cyan-400/60 bg-cyan-500/10"
-                                                    : "border-white/10 bg-white/5 hover:bg-white/10"
+                                                    : "border-slate-300/20 bg-slate-100/5 hover:bg-slate-100/10"
                                             }`}
                                         >
-                                            <div className="flex items-center justify-between text-xs text-gray-300">
+                                            <div className="flex items-center justify-between text-xs text-slate-300">
                                                 <span>Deposit #{listingId}</span>
                                                 <span>{paymentInfo.method}</span>
                                             </div>
                                             <div className="mt-1 flex items-center justify-between text-sm">
-                                                <span className="text-gray-400">Available</span>
+                                                <span className="text-slate-400">Available</span>
                                                 <span className="text-white font-mono">
                                                     {formatAmount(String(listing.remaining_deposits), selectedToken.sym)} {selectedToken.sym}
                                                 </span>
                                             </div>
                                             <div className="mt-1 flex items-center justify-between text-xs">
-                                                <span className="text-gray-500">Seller</span>
-                                                <span className="text-gray-300 font-mono">{shortAccountId(listing.depositor)}</span>
+                                                <span className="text-slate-500">Seller</span>
+                                                <span className="text-slate-300 font-mono">{shortAccountId(listing.depositor)}</span>
                                             </div>
                                             {paymentInfo.accountTag && (
                                                 <div className="mt-1 flex items-center justify-between text-xs">
-                                                    <span className="text-gray-500">User Tagname</span>
-                                                    <span className="text-gray-200 font-mono">{paymentInfo.accountTag}</span>
+                                                    <span className="text-slate-500">User Tagname</span>
+                                                    <span className="text-slate-200 font-mono">{paymentInfo.accountTag}</span>
                                                 </div>
                                             )}
                                         </button>
@@ -481,32 +510,32 @@ export default function BuyWidget({
                         </div>
 
                         <div className="relative">
-                            <div className="absolute left-1/2 -top-3 -translate-x-1/2 w-8 h-8 bg-[#111] rounded-full border border-white/10 flex items-center justify-center text-gray-500 z-10">
+                            <div className="absolute left-1/2 -top-3 -translate-x-1/2 w-8 h-8 bg-slate-900 rounded-full border border-slate-400/20 flex items-center justify-center text-slate-400 z-10">
                                 ↓
                             </div>
 
-                            <div className="bg-[#050505]/50 border border-white/5 rounded-2xl p-4 pt-6 space-y-4">
+                            <div className="card-outline rounded-2xl p-4 pt-6 space-y-4">
                                 <div className="flex justify-between items-center">
-                                    <label className="text-xs font-medium text-gray-400">
+                                    <label className="text-xs font-medium text-slate-300">
                                         You Receive
                                     </label>
-                                    <div className="flex items-center gap-2 px-2 py-1 rounded-full bg-white/5 border border-white/5 text-xs text-gray-300">
+                                    <div className="flex items-center gap-2 px-2 py-1 rounded-full bg-slate-100/5 border border-slate-300/20 text-xs text-slate-300">
                                         {selectedToken.network} Network
                                     </div>
                                 </div>
 
                                 <div className="flex items-center justify-between">
-                                    <div className="text-2xl font-bold text-gray-500">
+                                    <div className="text-2xl font-bold text-slate-300">
                                         {estimatedCryptoAmount === null
                                             ? `≈ -- ${selectedToken.sym}`
                                             : `≈ ${formatCryptoEstimate(estimatedCryptoAmount)} ${selectedToken.sym}`}
                                     </div>
-                                    <div className="flex items-center gap-2 bg-white/10 px-3 py-1.5 rounded-xl border border-white/10">
+                                    <div className="flex items-center gap-2 bg-slate-100/10 px-3 py-1.5 rounded-xl border border-slate-300/25">
                                         <span className="text-xl">{selectedToken.icon}</span>
                                         <span className="font-bold text-white">{selectedToken.sym}</span>
                                     </div>
                                 </div>
-                                <p className="text-xs text-gray-500">
+                                <p className="text-xs text-slate-400">
                                     {assetUsdPrice
                                         ? `1 ${selectedToken.sym} ≈ ${formatUsdValue(assetUsdPrice)}`
                                         : "Price unavailable"}
@@ -514,8 +543,8 @@ export default function BuyWidget({
                             </div>
                         </div>
 
-                        <div className="w-full bg-[#050505]/50 border border-white/5 rounded-2xl p-4 space-y-2">
-                            <label className="text-xs font-medium text-gray-400">
+                        <div className="w-full card-outline rounded-2xl p-4 space-y-2">
+                            <label className="text-xs font-medium text-slate-300">
                                 Receive Address ({selectedToken.sym})
                             </label>
                             <input
@@ -523,9 +552,9 @@ export default function BuyWidget({
                                 value={recipientAddress}
                                 onChange={(e) => setRecipientAddress(e.target.value)}
                                 placeholder={getRefundAddressHint(selectedToken.sym)}
-                                className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white outline-none focus:border-cyan-400/60"
+                                className="input-dark"
                             />
-                            <p className="text-xs text-gray-500">
+                            <p className="text-xs text-slate-400">
                                 This is where your {selectedToken.sym} will be released after payment proof.
                             </p>
                             {recipientAddress.trim().length > 0 && !hasValidRecipientAddress && (
@@ -552,93 +581,93 @@ export default function BuyWidget({
                     <>
                         <button
                             onClick={() => setStep("form")}
-                            className="flex items-center gap-1 text-xs text-gray-500 hover:text-white mb-2 transition-colors"
+                            className="flex items-center gap-1 text-xs text-slate-400 hover:text-white mb-2 transition-colors"
                         >
                             ← Edit Order
                         </button>
 
-                        <div className="bg-white/5 border border-white/10 rounded-2xl p-6 space-y-6">
+                        <div className="card-outline rounded-2xl p-6 space-y-6">
                             <h3 className="text-lg font-bold text-white text-center">
                                 Confirm Buy Order
                             </h3>
 
                             <div className="space-y-4">
                                 <div className="flex justify-between items-center">
-                                    <span className="text-gray-400">Listing</span>
+                                    <span className="text-slate-400">Listing</span>
                                     <span className="text-emerald-300 font-mono">
                                         #{selectedListingId || "N/A"}
                                     </span>
                                 </div>
                                 <div className="flex justify-between items-center">
-                                    <span className="text-gray-400">Paying</span>
+                                    <span className="text-slate-400">Paying</span>
                                     <span className="text-white font-bold text-lg">
                                         {amount} {selectedCurrency.code}
                                     </span>
                                 </div>
                                 <div className="flex justify-between items-center">
-                                    <span className="text-gray-400">Receiving</span>
+                                    <span className="text-slate-400">Receiving</span>
                                     <span className="text-white font-bold text-lg">
                                         {estimatedCryptoAmount === null
                                             ? `≈ -- ${selectedToken.sym}`
                                             : `≈ ${formatCryptoEstimate(estimatedCryptoAmount)} ${selectedToken.sym}`}
                                     </span>
                                 </div>
-                                <div className="w-full h-px bg-white/10" />
+                                <div className="w-full h-px bg-slate-300/15" />
                                 <div className="flex justify-between items-center text-sm">
-                                    <span className="text-gray-400">Payment Method</span>
+                                    <span className="text-slate-400">Payment Method</span>
                                     <span className="text-white">{selectedPaymentMethod}</span>
                                 </div>
                                 <div className="flex justify-between items-center text-sm">
-                                    <span className="text-gray-400">Send Fiat To (Seller)</span>
+                                    <span className="text-slate-400">Send Fiat To (Seller)</span>
                                     <span className="text-white font-mono text-xs">
                                         {selectedListing ? shortAccountId(selectedListing.depositor) : "N/A"}
                                     </span>
                                 </div>
                                 <div className="flex justify-between items-center text-sm">
-                                    <span className="text-gray-400">User Tagname</span>
+                                    <span className="text-slate-400">User Tagname</span>
                                     <span className="text-white font-mono text-xs">
                                         {selectedSellerAccountTag || "N/A"}
                                     </span>
                                 </div>
                                 <div className="flex justify-between items-center text-sm">
-                                    <span className="text-gray-400">Transfer Memo</span>
+                                    <span className="text-slate-400">Transfer Memo</span>
                                     <span className="text-amber-300 font-mono text-xs">
                                         Generated after signal
                                     </span>
                                 </div>
                                 <div className="flex justify-between items-center text-sm">
-                                    <span className="text-gray-400">Network</span>
-                                    <span className="text-blue-400">{selectedToken.network}</span>
+                                    <span className="text-slate-400">Network</span>
+                                    <span className="text-cyan-300">{selectedToken.network}</span>
                                 </div>
                                 <div className="flex justify-between items-center text-sm">
-                                    <span className="text-gray-400">Receive Address</span>
+                                    <span className="text-slate-400">Receive Address</span>
                                     <span className="text-white font-mono text-xs truncate w-56 text-right">
                                         {recipientAddress || "Not set"}
                                     </span>
                                 </div>
                                 <div className="flex justify-between items-center text-sm">
-                                    <span className="text-gray-400">Asset ID</span>
+                                    <span className="text-slate-400">Asset ID</span>
                                     <span className="text-white font-mono text-xs">{selectedAssetId}</span>
                                 </div>
                             </div>
 
-                            <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-3 flex gap-3">
+                            <div className="bg-cyan-500/10 border border-cyan-500/20 rounded-xl p-3 flex gap-3">
                                 <span className="text-xl">ℹ️</span>
-                                <p className="text-xs text-blue-200/80 leading-relaxed">
+                                <p className="text-xs text-cyan-100/85 leading-relaxed">
                                     After signaling, send {amount || "--"} {selectedCurrency.code} via {selectedPaymentMethod}
                                     to the seller, then submit proof to finalize release to your {selectedToken.sym} address.
                                 </p>
                             </div>
 
                             {isConnected && (
-                                <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-3 space-y-2">
+                                <div className="bg-sky-500/10 border border-sky-500/20 rounded-xl p-3 space-y-2">
                                     <div className="flex items-center justify-between text-xs">
-                                        <span className="text-blue-200/80">Wallet</span>
-                                        <span className="font-mono text-blue-100">{shortAccountId(accountId)}</span>
+                                        <span className="text-sky-100/80">Wallet</span>
+                                        <span className="font-mono text-sky-100">{shortAccountId(accountId)}</span>
                                     </div>
                                     <div className="flex items-center justify-between text-xs">
-                                        <span className="text-blue-200/80">NEAR Balance</span>
-                                        <span className="text-blue-100">
+                                        <span className="text-sky-100/80">NEAR Balance</span>
+                                        <span className="text-sky-100">
                                             {isBalanceLoading ? "Loading..." : formatBalance(walletBalanceNear)}
                                         </span>
                                     </div>
@@ -646,7 +675,7 @@ export default function BuyWidget({
                                         <button
                                             type="button"
                                             onClick={() => void onRefreshBalance()}
-                                            className="px-3 py-1.5 rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 text-xs text-white transition-colors"
+                                            className="px-3 py-1.5 rounded-lg border border-slate-300/20 bg-slate-100/5 hover:bg-slate-100/10 text-xs text-white transition-colors"
                                         >
                                             Refresh
                                         </button>
@@ -672,7 +701,7 @@ export default function BuyWidget({
                         <button
                             onClick={handleConfirm}
                             disabled={isSubmitting || isConnecting || !selectedListingId || !!listingAmountValidationError}
-                            className={`w-full py-4 text-base rounded-xl relative overflow-hidden ${isConnected ? "btn-primary" : "bg-blue-600 hover:bg-blue-700 text-white"
+                            className={`w-full py-4 text-base rounded-xl relative overflow-hidden ${isConnected ? "btn-primary" : "bg-sky-700 hover:bg-sky-600 text-white border border-sky-300/30"
                                 }`}
                         >
                             {isSubmitting ? (

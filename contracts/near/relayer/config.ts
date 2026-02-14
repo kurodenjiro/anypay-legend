@@ -32,10 +32,26 @@ function getNumberEnv(name: string, fallback: number): number {
 }
 
 export function loadConfig(): RelayerConfig {
+  const rpcUrl =
+    process.env.RPC_URL?.trim()
+    || process.env.NEXT_PUBLIC_NEAR_RPC_URL?.trim()
+    || "";
+  const contractId =
+    process.env.CONTRACT_ID?.trim()
+    || process.env.NEXT_PUBLIC_NEAR_CONTRACT_ID?.trim()
+    || "";
+
+  if (!rpcUrl) {
+    throw new Error("Missing required env: RPC_URL (or NEXT_PUBLIC_NEAR_RPC_URL)");
+  }
+  if (!contractId) {
+    throw new Error("Missing required env: CONTRACT_ID (or NEXT_PUBLIC_NEAR_CONTRACT_ID)");
+  }
+
   return {
     networkId: process.env.NETWORK_ID?.trim() || "testnet",
-    rpcUrl: getRequiredEnv("RPC_URL"),
-    contractId: getRequiredEnv("CONTRACT_ID"),
+    rpcUrl,
+    contractId,
     oracleAccountId: getRequiredEnv("ORACLE_ACCOUNT_ID"),
     oraclePrivateKey: getRequiredEnv("ORACLE_PRIVATE_KEY"),
     intentsApiKey: process.env.INTENTS_API_KEY?.trim() || undefined,

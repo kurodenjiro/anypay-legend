@@ -101,11 +101,18 @@ function normalizeQuoteAmountForAsset(rawAmount: string, assetId: string): {
   return { amount: value.toString(), adjusted: false };
 }
 
-function deriveOriginTxHash(status: any): string {
-  const fromSwap = status?.swapDetails?.originChainTxHashes?.[0]?.hash;
+function deriveOriginTxHash(status: unknown): string {
+  const response = status as {
+    correlationId?: unknown;
+    swapDetails?: {
+      originChainTxHashes?: Array<{ hash?: unknown }>;
+    };
+  } | null;
+
+  const fromSwap = response?.swapDetails?.originChainTxHashes?.[0]?.hash;
   if (typeof fromSwap === "string" && fromSwap.length > 0) return fromSwap;
 
-  const correlation = status?.correlationId;
+  const correlation = response?.correlationId;
   if (typeof correlation === "string" && correlation.length > 0) {
     return `correlation:${correlation}`;
   }
@@ -183,6 +190,10 @@ export class RelayerRunner {
     return new RelayerRunner(config, intentsClient, nearClient);
   }
 
+  async runOnce(): Promise<RelayerTickResult> {
+    return this.tick();
+  }
+
   requestShutdown(): void {
     this.shutdownRequested = true;
   }
@@ -208,19 +219,42 @@ export class RelayerRunner {
     this.running = false;
   }
 
-  private async tick(): Promise<void> {
+  private async tick(): Promise<RelayerTickResult> {
     const awaiting = await this.nearClient.getAwaitingDepositIds(this.config.pageSize);
     if (awaiting.length === 0) {
-      return;
+      return {
+        awaitingCount: 0,
+        processedCount: 0,
+        failedCount: 0,
+        processedDepositIds: [],
+        failedDepositIds: [],
+      };
     }
+
+    let processedCount = 0;
+    let failedCount = 0;
+    const processedDepositIds: number[] = [];
+    const failedDepositIds: number[] = [];
 
     for (const depositId of awaiting) {
       try {
         await this.processDeposit(depositId);
+        processedCount += 1;
+        processedDepositIds.push(depositId);
       } catch (error) {
         console.error(`[relayer] deposit ${depositId} processing failed`, error);
+        failedCount += 1;
+        failedDepositIds.push(depositId);
       }
     }
+
+    return {
+      awaitingCount: awaiting.length,
+      processedCount,
+      failedCount,
+      processedDepositIds,
+      failedDepositIds,
+    };
   }
 
   private async processDeposit(depositId: number): Promise<void> {
@@ -412,4 +446,12 @@ export class RelayerRunner {
       throw error;
     }
   }
+}
+
+export interface RelayerTickResult {
+  awaitingCount: number;
+  processedCount: number;
+  failedCount: number;
+  processedDepositIds: number[];
+  failedDepositIds: number[];
 }

@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/relayer/tick",
+      "schedule": "*/5 * * * *"
+    }
+  ]
+}
