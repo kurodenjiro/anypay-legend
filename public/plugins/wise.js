@@ -12,6 +12,7 @@ const DEFAULT_PROXY_PATH = "/proxy?token=";
 // - The verifier proxy token can include host:port. We need :3000 for local demo.
 const demoOrigin = "https://anypay-legend.vercel.app";
 const uiPath = "/tlsn-demo/payment";
+const proofPath = "/api/tlsn-demo/proof-source";
 const demoUrl = new URL(demoOrigin);
 const requestHost = demoUrl.hostname;
 const requestHostWithPort = demoUrl.host;
@@ -24,7 +25,7 @@ const config = {
         {
             method: "GET",
             host: requestHost,
-            pathname: uiPath,
+            pathname: proofPath,
             verifierUrl: VERIFIER_URL,
         },
     ],
@@ -121,7 +122,7 @@ function buildProofContext() {
     };
 }
 
-function buildTargetUrl(context) {
+function buildQuery(context) {
     const params = new URLSearchParams();
     if (context.intentId) params.set("intentId", context.intentId);
     if (context.platform) params.set("platform", context.platform);
@@ -130,8 +131,17 @@ function buildTargetUrl(context) {
     if (context.amount) params.set("amount", context.amount);
     if (context.currency) params.set("currency", context.currency);
     if (context.seller) params.set("seller", context.seller);
-    const query = params.toString();
+    return params.toString();
+}
+
+function buildDemoPageUrl(context) {
+    const query = buildQuery(context);
     return query ? `${demoOrigin}${uiPath}?${query}` : `${demoOrigin}${uiPath}`;
+}
+
+function buildProofUrl(context) {
+    const query = buildQuery(context);
+    return query ? `${demoOrigin}${proofPath}?${query}` : `${demoOrigin}${proofPath}`;
 }
 
 function expandUI() {
@@ -144,8 +154,8 @@ function minimizeUI() {
 
 function openDemoPage() {
     const context = buildProofContext();
-    const targetUrl = buildTargetUrl(context);
-    openWindow(targetUrl);
+    const demoPageUrl = buildDemoPageUrl(context);
+    openWindow(demoPageUrl);
 }
 
 function open() {
@@ -194,7 +204,7 @@ async function onClick() {
 
     setState("isRequestPending", true);
     const context = buildProofContext();
-    const targetUrl = buildTargetUrl(context);
+    const targetUrl = buildProofUrl(context);
 
     try {
         const parsedTarget = new URL(targetUrl);
@@ -307,7 +317,7 @@ function main() {
     const paymentConfirmed = useState("paymentConfirmed", false);
     const cachedHeaderSeen = useState("headerSeen", false);
     const context = buildProofContext();
-    const targetUrl = buildTargetUrl(context);
+    const targetUrl = buildDemoPageUrl(context);
 
     if (!cachedHeaderSeen) {
         const [headerMsg] = useHeaders((headers) =>

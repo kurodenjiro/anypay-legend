@@ -125,6 +125,12 @@ export default function TLSNNotarization({
         void refreshPluginStatus();
     }, [refreshPluginStatus]);
 
+    useEffect(() => {
+        if (!proofError) return;
+        console.error(`[TLSN Proof Error] ${proofError}`);
+        appendCheckLog(`Proof error: ${proofError}`);
+    }, [appendCheckLog, proofError]);
+
     const submitProof = useCallback(async (proof: TlsnDemoProofPayload) => {
         if (!proof?.proofId) {
             setProofError("Received proof payload is missing proofId.");
