@@ -80,6 +80,7 @@ async function handleTick(request: NextRequest) {
         return NextResponse.json({ ok: true, result }, { status: 200 });
     } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error ?? "Unknown error");
+        console.log(`[relayer] tick failed: ${message}`);
         return NextResponse.json(
             {
                 ok: false,
