@@ -15,6 +15,7 @@ type BuyIntentHistoryItem = {
     accountId: string;
     intentId: string;
     txHash?: string;
+    proofTxHash?: string;
     depositId?: number;
     assetId?: string;
     chain?: string;
@@ -130,6 +131,7 @@ function buildHistoryDetailHref(item: BuyIntentHistoryItem): string {
     };
 
     append("txHash", item.txHash);
+    append("proofTxHash", item.proofTxHash);
     append("depositId", item.depositId);
     append("assetId", item.assetId);
     append("chain", item.chain);
@@ -189,6 +191,7 @@ function loadStoredBuyHistory(): BuyIntentHistoryItem[] {
                 accountId,
                 intentId,
                 txHash: candidate.txHash ? String(candidate.txHash) : undefined,
+                proofTxHash: candidate.proofTxHash ? String(candidate.proofTxHash) : undefined,
                 depositId: Number.isFinite(Number(candidate.depositId))
                     ? Number(candidate.depositId)
                     : undefined,
@@ -239,6 +242,7 @@ function upsertHistoryItem(
         ...next[index],
         ...item,
         txHash: item.txHash || next[index].txHash,
+        proofTxHash: item.proofTxHash || next[index].proofTxHash,
         status: item.status || next[index].status,
     };
     return sortHistory(next);
@@ -391,6 +395,7 @@ export default function BuyFlow({ initialIntentId = "" }: BuyFlowProps) {
         const params = new URLSearchParams(searchParamsKey);
         return {
             txHash: String(params.get("txHash") || "").trim(),
+            proofTxHash: String(params.get("proofTxHash") || "").trim(),
             depositId: toOptionalNumber(String(params.get("depositId") || "")),
             chain: String(params.get("chain") || "").trim(),
             amount: String(params.get("amount") || "").trim(),
@@ -461,6 +466,7 @@ export default function BuyFlow({ initialIntentId = "" }: BuyFlowProps) {
                     accountId,
                     intentId,
                     txHash: storedRow?.txHash,
+                    proofTxHash: storedRow?.proofTxHash,
                     depositId: Number(intent.deposit_id),
                     assetId: storedRow?.assetId,
                     chain: intent.chain || storedRow?.chain,
@@ -583,6 +589,11 @@ export default function BuyFlow({ initialIntentId = "" }: BuyFlowProps) {
                 || historyRow?.txHash
                 || "",
             ).trim();
+            const proofTxHash = String(
+                detailQuery.proofTxHash
+                || historyRow?.proofTxHash
+                || "",
+            ).trim();
             const fiatAmount = String(
                 detailQuery.fiatAmount
                 || historyRow?.fiatAmount
@@ -639,6 +650,7 @@ export default function BuyFlow({ initialIntentId = "" }: BuyFlowProps) {
                 sellerAccountTag: sellerTagname,
                 transferMemo,
                 txHash,
+                proofTxHash,
                 selectedListing,
             }));
             setCurrentState(isVerifiedIntentStatus(intentStatus) ? "SUCCESS" : "NOTARIZE");
@@ -648,6 +660,7 @@ export default function BuyFlow({ initialIntentId = "" }: BuyFlowProps) {
                     accountId,
                     intentId: detailIntentId,
                     txHash: txHash || undefined,
+                    proofTxHash: proofTxHash || undefined,
                     depositId: Number.isInteger(resolvedDepositId) && resolvedDepositId > 0
                         ? resolvedDepositId
                         : historyRow?.depositId,
@@ -907,14 +920,47 @@ export default function BuyFlow({ initialIntentId = "" }: BuyFlowProps) {
             );
             const proofTxHash = getTxHash(fulfillResult);
             const latestIntent = await nearService.getIntent(activeIntentId).catch(() => null);
+            const normalizedProofTxHash = proofTxHash === "unknown" ? undefined : proofTxHash;
 
             setTradeData((prev: any) => ({
                 ...prev,
                 proof,
-                proofTxHash,
+                proofTxHash: normalizedProofTxHash,
                 proofSubmitStatus: "SUBMITTED",
                 intentStatus: latestIntent?.status || prev?.intentStatus || "Fulfilled",
             }));
+            if (accountId) {
+                const createdAtMs = Number(tradeData?.timestamp || Date.now());
+                const deadlineAtMs =
+                    Number(tradeData?.deadlineAtMs || 0) > 0
+                        ? Number(tradeData.deadlineAtMs)
+                        : createdAtMs + INTENT_EXPIRATION_MS;
+                const historyUpdate: BuyIntentHistoryItem = {
+                    accountId,
+                    intentId: activeIntentId,
+                    txHash: String(tradeData?.txHash || "").trim() || undefined,
+                    proofTxHash: normalizedProofTxHash,
+                    depositId: Number.isInteger(Number(tradeData?.depositId))
+                        ? Number(tradeData.depositId)
+                        : undefined,
+                    assetId: String(tradeData?.assetId || "").trim() || undefined,
+                    chain: String(tradeData?.chain || "").trim() || undefined,
+                    amount: String(tradeData?.amount || "").trim() || undefined,
+                    fiatAmount: String(tradeData?.fiatAmount || "").trim() || undefined,
+                    paymentMethod: String(tradeData?.paymentMethod || "").trim() || undefined,
+                    createdAtMs,
+                    deadlineAtMs,
+                    status: String(latestIntent?.status || tradeData?.intentStatus || "Fulfilled").trim(),
+                    sellerPlatform: String(tradeData?.sellerPlatform || "").trim() || undefined,
+                    sellerTagname: String(tradeData?.sellerTagname || "").trim() || undefined,
+                    transferMemo: String(tradeData?.transferMemo || "").trim() || undefined,
+                };
+                setHistoryItems((prev) => {
+                    const next = upsertHistoryItem(prev, historyUpdate);
+                    persistHistoryForAccount(accountId, next);
+                    return next;
+                });
+            }
 
             await loadWalletBalance();
             await refreshHistory();
@@ -928,7 +974,7 @@ export default function BuyFlow({ initialIntentId = "" }: BuyFlowProps) {
                 }`,
             );
         }
-    }, [tradeData?.intentId, loadWalletBalance, refreshHistory]);
+    }, [accountId, tradeData, loadWalletBalance, refreshHistory]);
     const activePaymentInfo = parsePaymentMethod(
         getListingPaymentMethodRaw(tradeData?.selectedListing)
         || String(tradeData?.paymentMethodRaw || tradeData?.listingPaymentMethodRaw || ""),
