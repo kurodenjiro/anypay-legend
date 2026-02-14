@@ -46,8 +46,16 @@ function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-const ATTESTATION_BACKEND_URL =
-    process.env.NEXT_PUBLIC_ATTESTATION_BACKEND_URL || "http://127.0.0.1:3101";
+function normalizeAttestationBase(value: string | undefined): string {
+    const raw = String(value || "").trim();
+    const fallback = "/api/attestation";
+    if (!raw) return fallback;
+    return raw.endsWith("/") ? raw.slice(0, -1) : raw;
+}
+
+const ATTESTATION_BACKEND_URL = normalizeAttestationBase(
+    process.env.NEXT_PUBLIC_ATTESTATION_BACKEND_URL,
+);
 
 export default function TLSNNotarization({
     mode,

@@ -514,50 +514,6 @@ function main() {
                             ),
                         ],
                     ),
-                    div(
-                        {
-                            style: {
-                                display: "flex",
-                                gap: "8px",
-                            },
-                        },
-                        [
-                            button(
-                                {
-                                    style: {
-                                        flex: "1",
-                                        padding: "9px",
-                                        borderRadius: "6px",
-                                        border: "1px solid #cbd5e1",
-                                        backgroundColor: "white",
-                                        color: "#334155",
-                                        cursor: "pointer",
-                                        fontWeight: "600",
-                                        fontSize: "12px",
-                                    },
-                                    onclick: "open",
-                                },
-                                ["Open Demo"],
-                            ),
-                            button(
-                                {
-                                    style: {
-                                        flex: "1",
-                                        padding: "9px",
-                                        borderRadius: "6px",
-                                        border: "1px solid #cbd5e1",
-                                        backgroundColor: "white",
-                                        color: "#334155",
-                                        cursor: "pointer",
-                                        fontWeight: "600",
-                                        fontSize: "12px",
-                                    },
-                                    onclick: "resetChecks",
-                                },
-                                ["Reset"],
-                            ),
-                        ],
-                    ),
                     button(
                         {
                             style: {
