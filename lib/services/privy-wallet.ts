@@ -37,7 +37,7 @@ const WALLET_PROXY_SIGN_ATTEMPT_TIMEOUT_MS = readPositiveIntEnv(
 );
 const WALLET_PROXY_PREWARM_MAX_WAIT_MS = readPositiveIntEnv(
     "NEXT_PUBLIC_PRIVY_WALLET_PREWARM_MAX_WAIT_MS",
-    45_000,
+    120_000,
     { min: 10_000, max: WALLET_PROXY_INIT_MAX_WAIT_MS },
 );
 const TX_SEND_MAX_RETRIES_ON_WALLET_INIT = 2;
@@ -227,7 +227,18 @@ export class PrivyNearSigner extends Signer {
             console.log("PrivyNearSigner: wallet proxy warmup complete");
         } catch (error) {
             // Warm-up is best-effort and should not block the app.
-            console.warn("PrivyNearSigner: wallet proxy warmup not completed", error);
+            if (this.isWalletProxyNotInitializedError(error)) {
+                const waitedSec = Math.floor(maxWaitMs / 1000);
+                console.info(
+                    `PrivyNearSigner: wallet proxy warmup not completed after ${waitedSec}s; ` +
+                    "continuing and retrying on transaction sign.",
+                );
+                return;
+            }
+            console.warn(
+                "PrivyNearSigner: wallet proxy warmup failed",
+                this.getErrorMessage(error),
+            );
         }
     }
 

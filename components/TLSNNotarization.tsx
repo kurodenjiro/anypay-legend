@@ -12,8 +12,6 @@ import {
     getTlsnWisePluginStatus,
     getWisePluginSourceUrl,
     installTlsnWisePlugin,
-    TLSN_CHROME_WEBSTORE_URL,
-    TLSN_EXTENSION_REPO_URL,
 } from "@/lib/services/tlsn-extension";
 
 interface TLSNNotarizationProps {
@@ -46,6 +44,8 @@ function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const ATTESTATION_POLL_INTERVAL_MS = 1000;
+
 function normalizeAttestationBase(value: string | undefined): string {
     const raw = String(value || "").trim();
     const fallback = "/api/attestation";
@@ -75,11 +75,7 @@ export default function TLSNNotarization({
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [receivedProof, setReceivedProof] = useState<TlsnDemoProofPayload | null>(null);
     const [pluginState, setPluginState] = useState<TlsnPluginState>("checking");
-    const [pluginMessage, setPluginMessage] = useState("");
     const [pluginSourceUrl, setPluginSourceUrl] = useState("/plugins/wise.js");
-    const [extensionInstalled, setExtensionInstalled] = useState(false);
-    const [wisePluginInstalled, setWisePluginInstalled] = useState(false);
-    const [checkLogs, setCheckLogs] = useState<string[]>([]);
     const processedProofIdsRef = useRef<Set<string>>(new Set());
     const autoInstallAttemptedRef = useRef(false);
 
@@ -90,10 +86,7 @@ export default function TLSNNotarization({
     );
 
     const appendCheckLog = useCallback((message: string) => {
-        const ts = new Date().toLocaleTimeString();
-        const line = `[${ts}] ${message}`;
         console.info(`[TLSN Plugin Check] ${message}`);
-        setCheckLogs((prev) => [line, ...prev].slice(0, 14));
     }, []);
 
     const refreshPluginStatus = useCallback(async () => {
@@ -103,9 +96,6 @@ export default function TLSNNotarization({
         appendCheckLog(`Checking TLSN extension and plugin (${sourceUrl})`);
 
         const status = await getTlsnWisePluginStatus(sourceUrl);
-        setPluginMessage(status.message || "");
-        setExtensionInstalled(status.extensionInstalled);
-        setWisePluginInstalled(status.pluginInstalled);
 
         if (!status.extensionInstalled) {
             setPluginState("missing_extension");
@@ -191,12 +181,14 @@ export default function TLSNNotarization({
         const normalizedIntent = String(activeIntentId || "").trim();
         if (!normalizedIntent) return null;
 
+        const maxWaitMs = 120000;
         const endpoint = `${ATTESTATION_BACKEND_URL}/attestations/intent/${encodeURIComponent(normalizedIntent)}`;
-        for (let attempt = 0; attempt < 30; attempt += 1) {
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < maxWaitMs) {
             try {
                 const response = await fetch(endpoint, { cache: "no-store" });
                 if (response.status === 404) {
-                    await sleep(500);
+                    await sleep(ATTESTATION_POLL_INTERVAL_MS);
                     continue;
                 }
                 if (!response.ok) {
@@ -205,18 +197,16 @@ export default function TLSNNotarization({
                 const payload = (await response.json()) as TlsnAttestationRecord;
                 return payload;
             } catch (error: unknown) {
-                if (attempt >= 29) {
-                    appendCheckLog(
-                        `Attestation fetch failed: ${
-                            error instanceof Error ? error.message : "unknown error"
-                        }`,
-                    );
-                    return null;
-                }
-                await sleep(500);
+                appendCheckLog(
+                    `Attestation fetch retry: ${
+                        error instanceof Error ? error.message : "unknown error"
+                    }`,
+                );
+                await sleep(ATTESTATION_POLL_INTERVAL_MS);
             }
         }
 
+        appendCheckLog("Attestation not ready within 120s timeout.");
         return null;
     }, [appendCheckLog]);
 
@@ -312,7 +302,12 @@ export default function TLSNNotarization({
                     }`,
                 );
             } else {
-                appendCheckLog("No backend attestation found yet; continuing with plugin payload.");
+                setStatusMessage("Proof generated. Waiting for signed attestation from verifier backend...");
+                setProofError(
+                    "Attestation is not ready yet. Please wait a moment, then click Run Wise Plugin again.",
+                );
+                appendCheckLog("No backend attestation found yet; waiting for next retry.");
+                return;
             }
 
             const generatedProof: TlsnDemoProofPayload = {
@@ -361,7 +356,6 @@ export default function TLSNNotarization({
 
     const installWisePlugin = useCallback(async () => {
         setProofError("");
-        setPluginMessage("");
         setPluginState("installing");
         appendCheckLog("Attempting Wise plugin installation via TLSN extension.");
 
@@ -371,8 +365,9 @@ export default function TLSNNotarization({
         const result = await installTlsnWisePlugin(sourceUrl);
         if (!result.ok) {
             setPluginState("error");
-            setPluginMessage(result.message || "Failed to install Wise TLSN plugin.");
-            appendCheckLog(`Plugin install failed: ${result.message || "unknown error"}`);
+            const message = result.message || "Failed to install Wise TLSN plugin.";
+            setProofError(message);
+            appendCheckLog(`Plugin install failed: ${message}`);
             return;
         }
 
@@ -469,112 +464,15 @@ export default function TLSNNotarization({
                 </div>
             </div>
 
-            <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4">
-                <p className="text-sm text-blue-200/80 leading-relaxed">
-                    Run the Wise TLSN plugin directly in this tab using source{" "}
-                    <a className="underline" href={pluginSourceUrl} target="_blank" rel="noreferrer">{pluginSourceUrl}</a>.
-                </p>
-            </div>
-
-            <div className="bg-white/5 border border-white/10 rounded-xl p-4 space-y-3">
-                <div className="flex items-center justify-between gap-3">
-                    <p className="text-sm text-white font-medium">TLSN Plugin Check</p>
-                    <button
-                        type="button"
-                        onClick={() => {
-                            setCheckLogs([]);
-                            appendCheckLog("Console cleared.");
-                        }}
-                        className="px-2.5 py-1 rounded-md border border-white/15 bg-white/5 hover:bg-white/10 text-[11px] text-gray-200"
-                    >
-                        Clear Console
-                    </button>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 flex items-center justify-between">
-                        <span className="text-xs text-gray-400">Extension</span>
-                        <span className={`text-xs font-medium ${extensionInstalled ? "text-emerald-300" : "text-amber-300"}`}>
-                            {extensionInstalled ? "Installed" : "Missing"}
-                        </span>
-                    </div>
-                    <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 flex items-center justify-between">
-                        <span className="text-xs text-gray-400">Wise Plugin</span>
-                        <span className={`text-xs font-medium ${wisePluginInstalled ? "text-emerald-300" : "text-amber-300"}`}>
-                            {wisePluginInstalled ? "Installed" : "Missing"}
-                        </span>
-                    </div>
-                </div>
-
-                <p className="text-xs text-gray-300">
-                    {pluginState === "checking" && "Checking TLSN extension and Wise plugin..."}
-                    {pluginState === "ready" && "TLSN extension and Wise plugin are ready."}
-                    {pluginState === "missing_extension" && "TLSN extension was not detected in this browser."}
-                    {pluginState === "missing_plugin" && "TLSN extension is installed, but Wise plugin is missing."}
-                    {pluginState === "installing" && "Installing Wise plugin into TLSN extension..."}
-                    {pluginState === "error" && "Could not install Wise plugin automatically."}
-                </p>
-                {pluginMessage && (
-                    <p className="text-xs text-gray-400">{pluginMessage}</p>
-                )}
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                    <button
-                        type="button"
-                        onClick={() => void refreshPluginStatus()}
-                        disabled={pluginState === "checking" || pluginState === "installing"}
-                        className="w-full py-2 text-xs rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 disabled:opacity-60 text-white"
-                    >
-                        Recheck
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => void installWisePlugin()}
-                        disabled={
-                            pluginState === "ready"
-                            || pluginState === "checking"
-                            || pluginState === "installing"
-                        }
-                        className="w-full py-2 text-xs rounded-lg border border-cyan-400/40 bg-cyan-500/10 hover:bg-cyan-500/20 disabled:opacity-60 text-cyan-100"
-                    >
-                        Install Wise Plugin
-                    </button>
-                    <a
-                        href={TLSN_CHROME_WEBSTORE_URL}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="w-full py-2 text-xs rounded-lg border border-emerald-400/35 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-100 text-center"
-                    >
-                        Chrome Web Store
-                    </a>
-                </div>
-
-                <div className="space-y-1">
-                    <p className="text-[11px] text-gray-400">
-                        Extension page: <a className="underline" href={TLSN_CHROME_WEBSTORE_URL} target="_blank" rel="noreferrer">{TLSN_CHROME_WEBSTORE_URL}</a>
-                    </p>
-                    <p className="text-[11px] text-gray-500">
-                        Source: <a className="underline" href={TLSN_EXTENSION_REPO_URL} target="_blank" rel="noreferrer">{TLSN_EXTENSION_REPO_URL}</a>
-                    </p>
-                </div>
-
-                <div className="rounded-lg border border-white/10 bg-black/45 p-3">
-                    <p className="text-[11px] uppercase tracking-[0.12em] text-gray-400 mb-2">Console</p>
-                    {checkLogs.length === 0 ? (
-                        <p className="text-[11px] text-gray-500">No logs yet. Click Recheck to run plugin diagnostics.</p>
-                    ) : (
-                        <pre className="text-[11px] text-cyan-100 whitespace-pre-wrap break-all max-h-36 overflow-y-auto">
-                            {checkLogs.join("\n")}
-                        </pre>
-                    )}
-                </div>
-            </div>
-
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <button
                     type="button"
                     onClick={() => void openDemoWindow()}
-                    disabled={isSubmitting || pluginState !== "ready"}
+                    disabled={
+                        isSubmitting
+                        || pluginState === "checking"
+                        || pluginState === "installing"
+                    }
                     className="w-full btn-primary py-4 text-base rounded-xl disabled:opacity-60"
                 >
                     Run Wise Plugin
