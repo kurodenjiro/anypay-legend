@@ -3,7 +3,7 @@
 /* eslint-disable react-hooks/exhaustive-deps */
 
 // Local TLSN verifier endpoints.
-const VERIFIER_URL = "https://c651-2402-800-6378-31e1-9892-e797-485a-382a.ngrok-free.app";
+const VERIFIER_URL = "https://giving-freedom-production.up.railway.app";
 const DEFAULT_PROXY_PATH = "/proxy?token=";
 
 // Demo page host used for local proof generation.
