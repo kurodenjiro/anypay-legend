@@ -46,6 +46,9 @@ function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const ATTESTATION_POLL_INTERVAL_MS = 1000;
+const ATTESTATION_MAX_WAIT_MS = 120000;
+
 function normalizeAttestationBase(value: string | undefined): string {
     const raw = String(value || "").trim();
     const fallback = "/api/attestation";
@@ -192,11 +195,12 @@ export default function TLSNNotarization({
         if (!normalizedIntent) return null;
 
         const endpoint = `${ATTESTATION_BACKEND_URL}/attestations/intent/${encodeURIComponent(normalizedIntent)}`;
-        for (let attempt = 0; attempt < 30; attempt += 1) {
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < ATTESTATION_MAX_WAIT_MS) {
             try {
                 const response = await fetch(endpoint, { cache: "no-store" });
                 if (response.status === 404) {
-                    await sleep(500);
+                    await sleep(ATTESTATION_POLL_INTERVAL_MS);
                     continue;
                 }
                 if (!response.ok) {
@@ -205,18 +209,16 @@ export default function TLSNNotarization({
                 const payload = (await response.json()) as TlsnAttestationRecord;
                 return payload;
             } catch (error: unknown) {
-                if (attempt >= 29) {
-                    appendCheckLog(
-                        `Attestation fetch failed: ${
-                            error instanceof Error ? error.message : "unknown error"
-                        }`,
-                    );
-                    return null;
-                }
-                await sleep(500);
+                appendCheckLog(
+                    `Attestation fetch retry: ${
+                        error instanceof Error ? error.message : "unknown error"
+                    }`,
+                );
+                await sleep(ATTESTATION_POLL_INTERVAL_MS);
             }
         }
 
+        appendCheckLog("Attestation not ready within 120s timeout.");
         return null;
     }, [appendCheckLog]);
 
@@ -312,7 +314,12 @@ export default function TLSNNotarization({
                     }`,
                 );
             } else {
-                appendCheckLog("No backend attestation found yet; continuing with plugin payload.");
+                setStatusMessage("Proof generated. Waiting for signed attestation from verifier backend...");
+                setProofError(
+                    "Attestation is not ready yet. Please wait a moment, then click Run Wise Plugin again.",
+                );
+                appendCheckLog("No backend attestation found yet; waiting for next retry.");
+                return;
             }
 
             const generatedProof: TlsnDemoProofPayload = {

@@ -85,6 +85,17 @@ function formatDeadlineCountdown(deadlineMs: number, nowMs: number): string {
     return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
+function isVerifiedIntentStatus(status: string | undefined): boolean {
+    const normalized = String(status || "").trim().toLowerCase();
+    return normalized === "fulfilled" || normalized === "released";
+}
+
+function formatIntentStatusLabel(status: string | undefined): string {
+    if (isVerifiedIntentStatus(status)) return "Verified";
+    const normalized = String(status || "").trim();
+    return normalized || "Signaled";
+}
+
 function toIntentTimestampMs(value: unknown): number | null {
     if (value === undefined || value === null) return null;
 
@@ -630,7 +641,7 @@ export default function BuyFlow({ initialIntentId = "" }: BuyFlowProps) {
                 txHash,
                 selectedListing,
             }));
-            setCurrentState("NOTARIZE");
+            setCurrentState(isVerifiedIntentStatus(intentStatus) ? "SUCCESS" : "NOTARIZE");
 
             if (accountId) {
                 const hydratedHistory: BuyIntentHistoryItem = {
@@ -672,7 +683,10 @@ export default function BuyFlow({ initialIntentId = "" }: BuyFlowProps) {
 
     useEffect(() => {
         if (!detailIntentId) return;
-        if (String(tradeData?.intentId || "").trim() === detailIntentId && currentState === "NOTARIZE") {
+        if (
+            String(tradeData?.intentId || "").trim() === detailIntentId
+            && (currentState === "NOTARIZE" || currentState === "SUCCESS")
+        ) {
             return;
         }
         void loadIntentDetailView();
@@ -988,7 +1002,7 @@ export default function BuyFlow({ initialIntentId = "" }: BuyFlowProps) {
                                                         Intent {shortHash(item.intentId)} · {item.chain || "Asset"}
                                                     </p>
                                                     <p className="text-xs text-gray-400 truncate">
-                                                        {item.status || "Signaled"} · Deadline: {formatDeadlineCountdown(item.deadlineAtMs, clockMs)}
+                                                        {formatIntentStatusLabel(item.status)} · Deadline: {formatDeadlineCountdown(item.deadlineAtMs, clockMs)}
                                                     </p>
                                                 </div>
                                                 <Link
