@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-    getTlsnDemoProofStorageKey,
     normalizeMemo,
     TLSN_DEMO_PROOF_MESSAGE_TYPE,
     type TlsnAttestationRecord,
@@ -12,6 +11,7 @@ import {
     getTlsnWisePluginStatus,
     getWisePluginSourceUrl,
     installTlsnWisePlugin,
+    TLSN_CHROME_WEBSTORE_URL,
 } from "@/lib/services/tlsn-extension";
 
 interface TLSNNotarizationProps {
@@ -89,11 +89,14 @@ export default function TLSNNotarization({
         console.info(`[TLSN Plugin Check] ${message}`);
     }, []);
 
-    const refreshPluginStatus = useCallback(async () => {
+    const refreshPluginStatus = useCallback(async (options?: { silent?: boolean }) => {
+        const silent = options?.silent ?? false;
         const sourceUrl = getWisePluginSourceUrl();
         setPluginSourceUrl(sourceUrl);
-        setPluginState("checking");
-        appendCheckLog(`Checking TLSN extension and plugin (${sourceUrl})`);
+        if (!silent) {
+            setPluginState("checking");
+            appendCheckLog(`Checking TLSN extension and plugin (${sourceUrl})`);
+        }
 
         const status = await getTlsnWisePluginStatus(sourceUrl);
 
@@ -113,6 +116,27 @@ export default function TLSNNotarization({
 
     useEffect(() => {
         void refreshPluginStatus();
+    }, [refreshPluginStatus]);
+
+    useEffect(() => {
+        const onFocus = () => void refreshPluginStatus({ silent: true });
+        const onVisible = () => {
+            if (document.visibilityState === "visible") {
+                void refreshPluginStatus({ silent: true });
+            }
+        };
+
+        const intervalId = window.setInterval(() => {
+            void refreshPluginStatus({ silent: true });
+        }, 5000);
+
+        window.addEventListener("focus", onFocus);
+        document.addEventListener("visibilitychange", onVisible);
+        return () => {
+            window.clearInterval(intervalId);
+            window.removeEventListener("focus", onFocus);
+            document.removeEventListener("visibilitychange", onVisible);
+        };
     }, [refreshPluginStatus]);
 
     useEffect(() => {
@@ -384,26 +408,31 @@ export default function TLSNNotarization({
         void installWisePlugin();
     }, [appendCheckLog, installWisePlugin, pluginState]);
 
-    const loadProofFromStorage = useCallback(async () => {
-        if (!intentId) {
-            setProofError("Missing intent hash.");
+    const pluginStatusMessage = useMemo(() => {
+        if (pluginState === "ready") return "Chrome TLSN extension is ready.";
+        if (pluginState === "checking") return "Checking Chrome TLSN extension status...";
+        if (pluginState === "missing_extension") {
+            return "Use Google Chrome and make sure the TLSN extension is installed and enabled.";
+        }
+        if (pluginState === "missing_plugin") {
+            return "TLSN extension is detected, but Wise plugin is missing.";
+        }
+        if (pluginState === "installing") return "Installing Wise plugin into TLSN extension...";
+        return "TLSN extension check failed. Reopen the page and retry.";
+    }, [pluginState]);
+
+    const primaryButtonLabel = useMemo(() => {
+        if (pluginState === "missing_extension") return "Install TLSN Extension (Chrome)";
+        return "Run Wise Plugin";
+    }, [pluginState]);
+
+    const handlePrimaryAction = useCallback(() => {
+        if (pluginState === "missing_extension") {
+            window.open(TLSN_CHROME_WEBSTORE_URL, "_blank", "noopener,noreferrer");
             return;
         }
-
-        try {
-            const key = getTlsnDemoProofStorageKey(intentId);
-            const raw = window.localStorage.getItem(key);
-            if (!raw) {
-                setProofError("No locally stored proof found for this intent yet.");
-                return;
-            }
-
-            const parsed = JSON.parse(raw) as TlsnDemoProofPayload;
-            await submitProof(parsed);
-        } catch (error: unknown) {
-            setProofError(error instanceof Error ? error.message : "Failed to load local proof.");
-        }
-    }, [intentId, submitProof]);
+        void openDemoWindow();
+    }, [openDemoWindow, pluginState]);
 
     useEffect(() => {
         const listener = (event: MessageEvent) => {
@@ -464,27 +493,23 @@ export default function TLSNNotarization({
                 </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-3">
                 <button
                     type="button"
-                    onClick={() => void openDemoWindow()}
-                    disabled={
-                        isSubmitting
-                        || pluginState === "checking"
-                        || pluginState === "installing"
-                    }
+                    onClick={handlePrimaryAction}
+                    disabled={isSubmitting || pluginState === "checking" || pluginState === "installing"}
                     className="w-full btn-primary py-4 text-base rounded-xl disabled:opacity-60"
                 >
-                    Run Wise Plugin
+                    {primaryButtonLabel}
                 </button>
-                <button
-                    type="button"
-                    onClick={() => void loadProofFromStorage()}
-                    disabled={isSubmitting}
-                    className="w-full py-4 text-base rounded-xl border border-white/15 bg-white/5 hover:bg-white/10 disabled:opacity-60 text-white"
-                >
-                    Import Local Proof
-                </button>
+                <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3">
+                    <p className="text-sm text-amber-100">
+                        Check Chrome browser and TLSN extension before generating proof.
+                    </p>
+                    <p className="text-xs text-amber-200/90 mt-1">
+                        {pluginStatusMessage}
+                    </p>
+                </div>
             </div>
 
             {statusMessage && (
