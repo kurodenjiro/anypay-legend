@@ -16,7 +16,6 @@ const demoUrl = new URL(demoOrigin);
 const requestHost = demoUrl.hostname;
 const requestHostWithPort = demoUrl.host;
 const pageNeedle = `${requestHostWithPort}${uiPath}`;
-const defaultProxyUrl = `ws://localhost:7047/proxy?token=${requestHostWithPort}`;
 
 const config = {
     name: "Wise Demo Transfer Verifier",
@@ -27,7 +26,6 @@ const config = {
             host: requestHost,
             pathname: uiPath,
             verifierUrl: VERIFIER_URL,
-            proxyUrl: defaultProxyUrl,
         },
     ],
     urls: [
